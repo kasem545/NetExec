@@ -245,9 +245,11 @@ class RPCEnumerator:
                 resp = samr.hSamrQueryInformationAlias(dce, alias_handle)
                 info = resp["Buffer"]["General"]
                 members_resp = samr.hSamrGetMembersInAlias(dce, alias_handle)
-                members = members_resp["Members"]["Sids"]
+                member_sids = members_resp["Members"]["Sids"]
                 samr.hSamrCloseHandle(dce, alias_handle)
-                return {"Name": info["Name"], "AdminComment": info["AdminComment"], "Attributes": 0, "MemberCount": info["MemberCount"]}, members
+                # Resolve SIDs to names for builtin aliases
+                member_names = self._resolve_sids_to_names(member_sids)
+                return {"Name": info["Name"], "AdminComment": info["AdminComment"], "Attributes": 0, "MemberCount": info["MemberCount"]}, member_names
 
         resp = samr.hSamrOpenGroup(dce, self._domain_handle, MAXIMUM_ALLOWED, rid)
         group_handle = resp["GroupHandle"]
@@ -260,7 +262,81 @@ class RPCEnumerator:
 
         samr.hSamrCloseHandle(dce, group_handle)
 
-        return info, members
+        # Resolve member RIDs to names for domain groups
+        member_names = self._resolve_rids_to_names(dce, self._domain_handle, members)
+
+        return info, member_names
+
+    def _resolve_rids_to_names(self, dce, domain_handle, members):
+        """Resolve member RIDs to names."""
+        member_names = []
+        if not members:
+            return member_names
+
+        rids = []
+        for m in members:
+            if hasattr(m, "fields") and "Data" in m.fields:
+                rids.append(m["Data"])
+            elif isinstance(m, dict) and "Data" in m:
+                rids.append(m["Data"])
+            elif isinstance(m, int):
+                rids.append(m)
+
+        if rids:
+            try:
+                resp = samr.hSamrLookupIdsInDomain(dce, domain_handle, rids)
+                names = resp["Names"]["Element"]
+                for name in names:
+                    if name["Data"]:
+                        member_names.append(str(name["Data"]))
+            except Exception:
+                # Fallback to RIDs if lookup fails
+                member_names = [str(r) for r in rids]
+
+        return member_names
+
+    def _resolve_sids_to_names(self, sids):
+        """Resolve SIDs to names using LSA."""
+        member_names = []
+        if not sids:
+            return member_names
+
+        try:
+            dce = self.get_lsa_dce()
+            resp = lsad.hLsarOpenPolicy(dce, lsad.POLICY_LOOKUP_NAMES)
+            policy_handle = resp["PolicyHandle"]
+
+            sid_list = []
+            for sid in sids:
+                if hasattr(sid, "formatCanonical"):
+                    sid_list.append(sid)
+                elif hasattr(sid, "Data"):
+                    sid_list.append(sid["Data"])
+
+            if sid_list:
+                resp = lsad.hLsarLookupSids(dce, policy_handle, sid_list, lsad.LSAP_LOOKUP_LEVEL.LsapLookupWksta)
+                names = resp["TranslatedNames"]["Names"]
+                domains = resp["ReferencedDomains"]["Domains"]
+
+                for name in names:
+                    domain_idx = name["DomainIndex"]
+                    account_name = name["Name"]
+                    if domain_idx >= 0 and domain_idx < len(domains):
+                        domain_name = domains[domain_idx]["Name"]
+                        member_names.append(f"{domain_name}\\{account_name}")
+                    else:
+                        member_names.append(str(account_name))
+
+            lsad.hLsarClose(dce, policy_handle)
+        except Exception:
+            # Fallback to SID strings if lookup fails
+            for sid in sids:
+                if hasattr(sid, "formatCanonical"):
+                    member_names.append(sid.formatCanonical())
+                else:
+                    member_names.append(str(sid))
+
+        return member_names
 
     def query_user_groups(self, user_input):
         """Query groups for a user."""
@@ -537,14 +613,39 @@ class RPCEnumerator:
 
         return {"name": info["sv101_name"], "comment": info["sv101_comment"], "version_major": info["sv101_version_major"], "version_minor": info["sv101_version_minor"], "type": info["sv101_type"]}
 
-    def enum_connections(self, qualifier=""):
+    def enum_connections(self, qualifier=None):
         """Enumerate connections."""
         dce = self.get_srvs_dce()
 
-        resp = srvs.hNetrConnectionEnum(dce, qualifier + "\x00", 1)
-        connections = resp["InfoStruct"]["ConnectionInfo"]["Level1"]["Buffer"]
+        all_connections = []
 
-        return [{"conn_id": c["coni1_id"], "conn_type": c["coni1_type"], "num_opens": c["coni1_num_opens"], "num_users": c["coni1_num_users"], "time": c["coni1_time"], "username": c["coni1_username"] if c["coni1_username"] else "", "netname": c["coni1_netname"] if c["coni1_netname"] else ""} for c in connections]
+        if qualifier:
+            resp = srvs.hNetrConnectionEnum(dce, qualifier, 1)
+            connections = resp["InfoStruct"]["ConnectionInfo"]["Level1"]["Buffer"]
+            for c in connections:
+                all_connections.append({"conn_id": c["coni1_id"], "conn_type": c["coni1_type"], "num_opens": c["coni1_num_opens"], "num_users": c["coni1_num_users"], "time": c["coni1_time"], "username": c["coni1_username"] if c["coni1_username"] else "", "netname": c["coni1_netname"] if c["coni1_netname"] else ""})
+        else:
+            shares = self.enum_shares_rpc()
+            for share in shares:
+                share_name = share["name"]
+                try:
+                    resp = srvs.hNetrConnectionEnum(dce, share_name, 1)
+                    connections = resp["InfoStruct"]["ConnectionInfo"]["Level1"]["Buffer"]
+                    for c in connections:
+                        all_connections.append({
+                            "conn_id": c["coni1_id"],
+                            "conn_type": c["coni1_type"],
+                            "num_opens": c["coni1_num_opens"],
+                            "num_users": c["coni1_num_users"],
+                            "time": c["coni1_time"],
+                            "username": c["coni1_username"] if c["coni1_username"] else "",
+                            "netname": c["coni1_netname"] if c["coni1_netname"] else "",
+                            "share": share_name,
+                        })
+                except Exception:
+                    pass
+
+        return all_connections
 
     def lsa_query_security(self):
         """Query LSA security object."""
@@ -553,8 +654,10 @@ class RPCEnumerator:
         resp = lsad.hLsarOpenPolicy(dce, MAXIMUM_ALLOWED)
         policy_handle = resp["PolicyHandle"]
 
-        resp = lsad.hLsarQuerySecurityObject(dce, policy_handle, 0x00000004)
-        return resp["SecurityDescriptor"]
+        # hLsarQuerySecurityObject already returns raw bytes (does b''.join internally)
+        sd_bytes = lsad.hLsarQuerySecurityObject(dce, policy_handle, 0x00000004)
+
+        return sd_bytes
 
     # ==================== User Management ====================
 

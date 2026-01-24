@@ -2366,16 +2366,28 @@ class smb(connection):
             self.logger.success(f"User: {info['UserName']}")
             self.logger.highlight(f"  Full Name: {info['FullName']}")
             self.logger.highlight(f"  Description: {info['AdminComment']}")
+            self.logger.highlight(f"  Comment: {info['UserComment']}")
             self.logger.highlight(f"  RID: 0x{rid:x} ({rid})")
             self.logger.highlight(f"  Primary Group RID: 0x{info['PrimaryGroupId']:x}")
             self.logger.highlight(f"  Home Directory: {info['HomeDirectory']}")
+            self.logger.highlight(f"  Home Drive: {info['HomeDirectoryDrive']}")
             self.logger.highlight(f"  Logon Script: {info['ScriptPath']}")
             self.logger.highlight(f"  Profile Path: {info['ProfilePath']}")
+            self.logger.highlight(f"  Workstations: {info['WorkStations']}")
 
             pwd_last_set = RPCEnumerator.filetime_to_str(info["PasswordLastSet"]["LowPart"], info["PasswordLastSet"]["HighPart"])
             last_logon = RPCEnumerator.filetime_to_str(info["LastLogon"]["LowPart"], info["LastLogon"]["HighPart"])
+            last_logoff = RPCEnumerator.filetime_to_str(info["LastLogoff"]["LowPart"], info["LastLogoff"]["HighPart"])
+            pwd_can_change = RPCEnumerator.filetime_to_str(info["PasswordCanChange"]["LowPart"], info["PasswordCanChange"]["HighPart"])
+            pwd_must_change = RPCEnumerator.filetime_to_str(info["PasswordMustChange"]["LowPart"], info["PasswordMustChange"]["HighPart"])
+            acct_expiry = RPCEnumerator.filetime_to_str(info["AccountExpires"]["LowPart"], info["AccountExpires"]["HighPart"])
+
             self.logger.highlight(f"  Password Last Set: {pwd_last_set}")
+            self.logger.highlight(f"  Password Can Change: {pwd_can_change}")
+            self.logger.highlight(f"  Password Must Change: {pwd_must_change}")
             self.logger.highlight(f"  Last Logon: {last_logon}")
+            self.logger.highlight(f"  Last Logoff: {last_logoff}")
+            self.logger.highlight(f"  Account Expires: {acct_expiry}")
             self.logger.highlight(f"  Logon Count: {info['LogonCount']}")
             self.logger.highlight(f"  Bad Password Count: {info['BadPasswordCount']}")
             self.logger.highlight(f"  Account Control: 0x{uac:08x} ({', '.join(uac_flags) if uac_flags else 'NONE'})")
@@ -2415,15 +2427,7 @@ class smb(connection):
             self.logger.highlight(f"  Member Count: {member_count}")
 
             if members:
-                member_strs = []
-                for m in members:
-                    if hasattr(m, "formatCanonical"):
-                        member_strs.append(m.formatCanonical())
-                    elif (hasattr(m, "fields") and "Data" in m.fields) or (isinstance(m, dict) and "Data" in m):
-                        member_strs.append(str(m["Data"]))
-                    else:
-                        member_strs.append(str(m))
-                self.logger.highlight(f"  Members: {', '.join(member_strs)}")
+                self.logger.highlight(f"  Members: {', '.join(members)}")
 
             rpc.close()
         except Exception as e:
@@ -2514,7 +2518,8 @@ class smb(connection):
 
             self.logger.success(f"Found {len(connections)} connection(s)")
             for c in connections:
-                self.logger.highlight(f"id: {c['conn_id']} | type: {c['conn_type']} | opens: {c['num_opens']} | users: {c['num_users']} | time: {c['time']}s | user: {c['username']} | share: {c['netname']}")
+                share_info = f" | share: {c.get('share', c.get('netname', ''))}"
+                self.logger.highlight(f"id: {c['conn_id']} | type: {c['conn_type']} | opens: {c['num_opens']} | users: {c['num_users']} | time: {c['time']}s | user: {c['username']}{share_info}")
 
             rpc.close()
         except Exception as e:
@@ -2646,15 +2651,128 @@ class smb(connection):
     def lsa_query_security(self):
         try:
             rpc = self._get_rpc_enumerator()
-            sec_desc = rpc.lsa_query_security()
+            sd_bytes = rpc.lsa_query_security()
 
+            from impacket.ldap.ldaptypes import SR_SECURITY_DESCRIPTOR
+
+            sd = SR_SECURITY_DESCRIPTOR(data=sd_bytes)
+
+            ace_type_names = {
+                0x00: "ACCESS_ALLOWED",
+                0x01: "ACCESS_DENIED",
+                0x02: "SYSTEM_AUDIT",
+                0x03: "SYSTEM_ALARM",
+                0x04: "ACCESS_ALLOWED_COMPOUND",
+                0x05: "ACCESS_ALLOWED_OBJECT",
+                0x06: "ACCESS_DENIED_OBJECT",
+                0x07: "SYSTEM_AUDIT_OBJECT",
+                0x08: "SYSTEM_ALARM_OBJECT",
+                0x09: "ACCESS_ALLOWED_CALLBACK",
+                0x0A: "ACCESS_DENIED_CALLBACK",
+                0x0B: "ACCESS_ALLOWED_CALLBACK_OBJECT",
+                0x0C: "ACCESS_DENIED_CALLBACK_OBJECT",
+                0x0D: "SYSTEM_AUDIT_CALLBACK",
+                0x0E: "SYSTEM_ALARM_CALLBACK",
+                0x0F: "SYSTEM_AUDIT_CALLBACK_OBJECT",
+                0x10: "SYSTEM_ALARM_CALLBACK_OBJECT",
+                0x11: "SYSTEM_MANDATORY_LABEL",
+            }
+
+            lsa_permissions = {
+                0x00000001: "POLICY_VIEW_LOCAL_INFORMATION",
+                0x00000002: "POLICY_VIEW_AUDIT_INFORMATION",
+                0x00000004: "POLICY_GET_PRIVATE_INFORMATION",
+                0x00000008: "POLICY_TRUST_ADMIN",
+                0x00000010: "POLICY_CREATE_ACCOUNT",
+                0x00000020: "POLICY_CREATE_SECRET",
+                0x00000040: "POLICY_CREATE_PRIVILEGE",
+                0x00000080: "POLICY_SET_DEFAULT_QUOTA_LIMITS",
+                0x00000100: "POLICY_SET_AUDIT_REQUIREMENTS",
+                0x00000200: "POLICY_AUDIT_LOG_ADMIN",
+                0x00000400: "POLICY_SERVER_ADMIN",
+                0x00000800: "POLICY_LOOKUP_NAMES",
+                0x00001000: "POLICY_NOTIFICATION",
+                0x00010000: "DELETE",
+                0x00020000: "READ_CONTROL",
+                0x00040000: "WRITE_DAC",
+                0x00080000: "WRITE_OWNER",
+            }
+
+            well_known_sids = {
+                "S-1-0-0": "Nobody",
+                "S-1-1-0": "Everyone",
+                "S-1-2-0": "Local",
+                "S-1-2-1": "Console Logon",
+                "S-1-3-0": "Creator Owner",
+                "S-1-3-1": "Creator Group",
+                "S-1-5-1": "Dialup",
+                "S-1-5-2": "Network",
+                "S-1-5-3": "Batch",
+                "S-1-5-4": "Interactive",
+                "S-1-5-6": "Service",
+                "S-1-5-7": "Anonymous",
+                "S-1-5-9": "Enterprise Domain Controllers",
+                "S-1-5-10": "Principal Self",
+                "S-1-5-11": "Authenticated Users",
+                "S-1-5-12": "Restricted Code",
+                "S-1-5-13": "Terminal Server Users",
+                "S-1-5-14": "Remote Interactive Logon",
+                "S-1-5-17": "IUSR",
+                "S-1-5-18": "Local System",
+                "S-1-5-19": "NT Authority\\Local Service",
+                "S-1-5-20": "NT Authority\\Network Service",
+                "S-1-5-32-544": "BUILTIN\\Administrators",
+                "S-1-5-32-545": "BUILTIN\\Users",
+                "S-1-5-32-546": "BUILTIN\\Guests",
+                "S-1-5-32-547": "BUILTIN\\Power Users",
+                "S-1-5-32-548": "BUILTIN\\Account Operators",
+                "S-1-5-32-549": "BUILTIN\\Server Operators",
+                "S-1-5-32-550": "BUILTIN\\Print Operators",
+                "S-1-5-32-551": "BUILTIN\\Backup Operators",
+                "S-1-5-32-552": "BUILTIN\\Replicators",
+                "S-1-15-2-1": "All App Packages",
+            }
+
+            def get_permissions(mask):
+                perms = []
+                for bit, name in lsa_permissions.items():
+                    if mask & bit:
+                        perms.append(name)
+                return perms
+
+            def get_sid_name(sid_str):
+                return well_known_sids.get(sid_str, sid_str)
+
+            revision = sd["Revision"]
+            if isinstance(revision, bytes):
+                revision = int.from_bytes(revision, "little")
             self.logger.success("LSA Security Descriptor")
-            self.logger.highlight(f"  Revision: {sec_desc['Revision']}")
-            self.logger.highlight(f"  Control: 0x{sec_desc['Control']:x}")
-            if sec_desc["OwnerSid"]:
-                self.logger.highlight(f"  Owner SID: {sec_desc['OwnerSid'].formatCanonical()}")
-            if sec_desc["GroupSid"]:
-                self.logger.highlight(f"  Group SID: {sec_desc['GroupSid'].formatCanonical()}")
+            self.logger.highlight(f"  Revision: {revision}")
+            self.logger.highlight(f"  Control: 0x{sd['Control']:04x}")
+
+            if sd["OwnerSid"]:
+                owner_sid = sd["OwnerSid"].formatCanonical()
+                self.logger.highlight(f"  Owner: {get_sid_name(owner_sid)} ({owner_sid})")
+            if sd["GroupSid"]:
+                group_sid = sd["GroupSid"].formatCanonical()
+                self.logger.highlight(f"  Group: {get_sid_name(group_sid)} ({group_sid})")
+
+            if sd["Dacl"]:
+                dacl = sd["Dacl"]
+                self.logger.highlight(f"  DACL: {dacl['AceCount']} ACE(s)")
+                for i, ace in enumerate(dacl["Data"]):
+                    ace_type_raw = ace["AceType"]
+                    ace_type_name = ace_type_names.get(ace_type_raw, f"UNKNOWN({ace_type_raw})")
+                    ace_flags = ace["AceFlags"]
+                    ace_sid = ace["Ace"]["Sid"].formatCanonical() if hasattr(ace["Ace"]["Sid"], "formatCanonical") else str(ace["Ace"]["Sid"])
+                    ace_mask = ace["Ace"]["Mask"]["Mask"]
+                    perms = get_permissions(ace_mask)
+
+                    self.logger.highlight(f"    ACE[{i}]: Type: {ace_type_name} (0x{ace_type_raw:02x}) Flags: 0x{ace_flags:02x}")
+                    self.logger.highlight(f"            SID: {get_sid_name(ace_sid)} ({ace_sid})")
+                    self.logger.highlight(f"            Mask: 0x{ace_mask:08x}")
+                    if perms:
+                        self.logger.highlight(f"            Permissions: {', '.join(perms)}")
 
             rpc.close()
         except Exception as e:
