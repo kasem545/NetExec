@@ -1,5 +1,10 @@
 import os
 import contextlib
+from types import ModuleType
+from importlib.machinery import SourceFileLoader
+from pathlib import Path
+
+import nxc
 
 from impacket import ntlm
 from impacket.uuid import uuidtup_to_bin
@@ -26,36 +31,51 @@ from impacket.dcerpc.v5.srvs import MSRPC_UUID_SRVS
 from impacket.dcerpc.v5.wkst import MSRPC_UUID_WKST
 
 from nxc.config import process_secret
-from nxc.connection import connection
 from nxc.helpers.ntlm_parser import parse_challenge
 from nxc.logger import NXCAdapter
+
+
+def _load_smb_protocol():
+    smb_path = Path(nxc.__file__).parent / "protocols" / "smb.py"
+    loader = SourceFileLoader("smb_protocol", str(smb_path))
+    smb_module = ModuleType(loader.name)
+    loader.exec_module(smb_module)
+    return smb_module.smb
+
+
+smb = _load_smb_protocol()
 
 MSRPC_UUID_PORTMAP = uuidtup_to_bin(("E1AF8308-5D1F-11C9-91A4-08002B14A0FA", "3.0"))
 
 
-class rpc(connection):
+class rpc(smb):
+    """
+    RPC protocol implementation that inherits from SMB.
+    
+    This design reuses SMB's connection handling for named pipe operations (ncacn_np),
+    avoiding duplication of SMB authentication and version negotiation logic.
+    
+    RPC uses TCP 135 for its primary transport (ncacn_ip_tcp) but falls back to
+    SMB named pipes for certain operations (SRVS, WKST, password operations).
+    """
+    
     def __init__(self, args, db, host):
-        self.domain = ""
-        self.targetDomain = ""
-        self.hash = ""
-        self.lmhash = ""
-        self.nthash = ""
-        self.server_os = None
-        self.doKerberos = False
         self.samr_dce = None
         self.lsa_dce = None
         self.srvs_dce = None
         self.wkst_dce = None
-        self.smb_conn = None  # SMB connection for SRVS/named pipe operations
         self.domain_handle = None
         self.builtin_handle = None
         self.server_handle = None
         self.policy_handle = None
         self.domain_sid = None
         self.machine_name = None
+        self._rpc_transport = None
+        self.doKerberos = False
+        self.smb_conn = None
+        
+        smb.__init__(self, args, db, host)
         self.protocol = "RPC"
-
-        connection.__init__(self, args, db, host)
 
     def proto_logger(self):
         self.logger = NXCAdapter(
@@ -72,9 +92,12 @@ class rpc(connection):
             if dce:
                 with contextlib.suppress(Exception):
                     dce.disconnect()
-        if self.smb_conn:
+        
+        if self._rpc_transport:
             with contextlib.suppress(Exception):
-                self.smb_conn.close()
+                self._rpc_transport.disconnect()
+        
+        super().disconnect()
 
     def create_conn_obj(self):
         connection_target = f"ncacn_ip_tcp:{self.host}[{self.port!s}]"
@@ -93,6 +116,7 @@ class rpc(connection):
             self.logger.debug(f"Error creating RPC connection: {e}")
             return False
         self.conn = rpctransport
+        self._rpc_transport = rpctransport
         return True
 
     def enum_host_info(self):
@@ -174,69 +198,126 @@ class rpc(connection):
 
         kerb_pass = next((s for s in [nthash, password, aesKey] if s), "")
         if useCache and kerb_pass == "":
-            ccache = CCache.loadFile(os.getenv("KRB5CCNAME"))
-            username = ccache.credentials[0].header["client"].prettyPrint().decode().split("@")[0]
-            self.username = username
+            try:
+                ccache_file = os.getenv("KRB5CCNAME")
+                if not ccache_file:
+                    self.logger.fail(f"{domain}\\{username} KRB5CCNAME environment variable not set")
+                    return False
+                ccache = CCache.loadFile(ccache_file)
+                if not ccache.credentials:
+                    self.logger.fail(f"{domain}\\{username} No credentials in ccache")
+                    return False
+                username = ccache.credentials[0].header["client"].prettyPrint().decode().split("@")[0]
+                self.username = username
+            except Exception as e:
+                self.logger.fail(f"{domain}\\{username} Failed to load ccache: {e}")
+                return False
         used_ccache = " from ccache" if useCache else f":{process_secret(kerb_pass)}"
+        last_error = None
 
-        try:
-            string_binding = epm.hept_map(self.host, MSRPC_UUID_SAMR, protocol="ncacn_ip_tcp")
-            rpctransport = transport.DCERPCTransportFactory(string_binding)
-            rpctransport.setRemoteHost(self.host)
-            rpctransport.set_connect_timeout(self.args.rpc_timeout)
-            rpctransport.set_credentials(username, password, domain, lmhash, nthash, self.aesKey)
-            rpctransport.set_kerberos(True, kdcHost)
-            dce = rpctransport.get_dce_rpc()
-            dce.set_auth_type(RPC_C_AUTHN_GSS_NEGOTIATE)
-            dce.set_auth_level(RPC_C_AUTHN_LEVEL_PKT_PRIVACY)
-            dce.connect()
-            dce.bind(MSRPC_UUID_SAMR)
-            samr.hSamrConnect(dce)
-            self.doKerberos = True
-            self.logger.success(f"{domain}\\{username}{used_ccache} {self.mark_pwned()}")
-            dce.disconnect()
-            return True
-        except Exception as e:
-            error_msg = str(e)
-            if "STATUS_LOGON_FAILURE" in error_msg or "SEC_E_LOGON_DENIED" in error_msg or "STATUS_ACCESS_DENIED" in error_msg:
-                error_msg = "Authentication failed"
-            elif "KDC_ERR" in error_msg:
-                error_msg = error_msg.split(":")[-1].strip() if ":" in error_msg else error_msg
-            elif "rpc_s_access_denied" in error_msg:
-                error_msg = "Access denied"
-            self.logger.fail(f"{domain}\\{username}{used_ccache} {error_msg}")
-            return False
+        bindings_to_try = []
+        for interface_uuid, interface_name in [(MSRPC_UUID_SAMR, "samr"), (MSRPC_UUID_LSAT, "lsarpc")]:
+            try:
+                tcp_binding = epm.hept_map(self.host, interface_uuid, protocol="ncacn_ip_tcp")
+                bindings_to_try.append((interface_uuid, interface_name, tcp_binding, "tcp"))
+            except Exception:
+                pass
+            bindings_to_try.append((interface_uuid, interface_name, f"ncacn_np:{self.host}[\\pipe\\{interface_name}]", "np"))
+
+        for interface_uuid, interface_name, string_binding, transport_type in bindings_to_try:
+            try:
+                self.logger.debug(f"Trying {interface_name} via {transport_type}: {string_binding}")
+                rpctransport = transport.DCERPCTransportFactory(string_binding)
+                rpctransport.setRemoteHost(self.host)
+                rpctransport.set_connect_timeout(self.args.rpc_timeout)
+                rpctransport.set_credentials(username, password, domain, lmhash, nthash, self.aesKey)
+                rpctransport.set_kerberos(True, kdcHost)
+                dce = rpctransport.get_dce_rpc()
+                dce.set_auth_type(RPC_C_AUTHN_GSS_NEGOTIATE)
+                dce.set_auth_level(RPC_C_AUTHN_LEVEL_PKT_PRIVACY)
+                dce.connect()
+                dce.bind(interface_uuid)
+                if interface_uuid == MSRPC_UUID_SAMR:
+                    samr.hSamrConnect(dce)
+                else:
+                    lsad.hLsarOpenPolicy(dce, lsad.POLICY_VIEW_LOCAL_INFORMATION)
+                self.doKerberos = True
+                self.logger.success(f"{domain}\\{username}{used_ccache} {self.mark_pwned()}")
+                dce.disconnect()
+                return True
+            except Exception as e:
+                last_error = str(e)
+                self.logger.debug(f"Auth via {interface_name}/{transport_type} failed: {last_error}")
+                if "STATUS_LOGON_FAILURE" in last_error:
+                    self.logger.fail(f"{domain}\\{username}{used_ccache} Authentication failed")
+                    return False
+                elif "KDC_ERR" in last_error:
+                    error_msg = last_error.split(":")[-1].strip() if ":" in last_error else last_error
+                    self.logger.fail(f"{domain}\\{username}{used_ccache} {error_msg}")
+                    return False
+                continue
+        
+        if last_error and ("rpc_s_access_denied" in last_error or "connection" in last_error.lower()):
+            self.logger.fail(f"{domain}\\{username}{used_ccache} RPC auth requires SMB (port 445)")
+        elif "STATUS_ACCESS_DENIED" in (last_error or ""):
+            self.logger.fail(f"{domain}\\{username}{used_ccache} Authentication failed")
+        else:
+            self.logger.fail(f"{domain}\\{username}{used_ccache} {last_error or 'Access denied'}")
+        return False
 
     def plaintext_login(self, domain, username, password):
         self.password = password
         self.username = username
         self.domain = domain
-        try:
-            string_binding = epm.hept_map(self.host, MSRPC_UUID_SAMR, protocol="ncacn_ip_tcp")
-            rpctransport = transport.DCERPCTransportFactory(string_binding)
-            rpctransport.setRemoteHost(self.host)
-            rpctransport.set_connect_timeout(self.args.rpc_timeout)
-            rpctransport.set_credentials(username, password, domain, self.lmhash, self.nthash)
-            dce = rpctransport.get_dce_rpc()
-            dce.set_auth_type(RPC_C_AUTHN_WINNT)
-            dce.set_auth_level(RPC_C_AUTHN_LEVEL_PKT_PRIVACY)
-            dce.connect()
-            dce.bind(MSRPC_UUID_SAMR)
-            samr.hSamrConnect(dce)
-            dce.disconnect()
-            out = f"{domain}\\{username}:{process_secret(password)} {self.mark_pwned()}"
-            if username == "" and password == "":
-                out += "(Default allow anonymous login)"
-            self.logger.success(out)
-            return True
-        except Exception as e:
-            error_msg = str(e)
-            if "STATUS_LOGON_FAILURE" in error_msg or "SEC_E_LOGON_DENIED" in error_msg or "STATUS_ACCESS_DENIED" in error_msg:
-                error_msg = "Authentication failed"
-            elif "rpc_s_access_denied" in error_msg:
-                error_msg = "Access denied"
-            self.logger.fail(f"{domain}\\{username}:{process_secret(password)} {error_msg}")
-            return False
+        last_error = None
+        
+        bindings_to_try = []
+        
+        for interface_uuid, interface_name in [(MSRPC_UUID_SAMR, "samr"), (MSRPC_UUID_LSAT, "lsarpc")]:
+            try:
+                tcp_binding = epm.hept_map(self.host, interface_uuid, protocol="ncacn_ip_tcp")
+                bindings_to_try.append((interface_uuid, interface_name, tcp_binding, "tcp"))
+            except Exception:
+                pass
+            bindings_to_try.append((interface_uuid, interface_name, f"ncacn_np:{self.host}[\\pipe\\{interface_name}]", "np"))
+        
+        for interface_uuid, interface_name, string_binding, transport_type in bindings_to_try:
+            try:
+                self.logger.debug(f"Trying {interface_name} via {transport_type}: {string_binding}")
+                rpctransport = transport.DCERPCTransportFactory(string_binding)
+                rpctransport.setRemoteHost(self.host)
+                rpctransport.set_connect_timeout(self.args.rpc_timeout)
+                rpctransport.set_credentials(username, password, domain, self.lmhash, self.nthash)
+                dce = rpctransport.get_dce_rpc()
+                dce.set_auth_type(RPC_C_AUTHN_WINNT)
+                dce.set_auth_level(RPC_C_AUTHN_LEVEL_PKT_PRIVACY)
+                dce.connect()
+                dce.bind(interface_uuid)
+                if interface_uuid == MSRPC_UUID_SAMR:
+                    samr.hSamrConnect(dce)
+                else:
+                    lsad.hLsarOpenPolicy(dce, lsad.POLICY_VIEW_LOCAL_INFORMATION)
+                dce.disconnect()
+                out = f"{domain}\\{username}:{process_secret(password)} {self.mark_pwned()}"
+                if username == "" and password == "":
+                    out += "(Default allow anonymous login)"
+                self.logger.success(out)
+                return True
+            except Exception as e:
+                last_error = str(e)
+                self.logger.debug(f"Auth via {interface_name}/{transport_type} failed: {last_error}")
+                if "STATUS_LOGON_FAILURE" in last_error:
+                    self.logger.fail(f"{domain}\\{username}:{process_secret(password)} Authentication failed")
+                    return False
+                continue
+        
+        if last_error and ("rpc_s_access_denied" in last_error or "connection" in last_error.lower()):
+            self.logger.fail(f"{domain}\\{username}:{process_secret(password)} RPC auth requires SMB (port 445)")
+        elif "STATUS_ACCESS_DENIED" in (last_error or ""):
+            self.logger.fail(f"{domain}\\{username}:{process_secret(password)} Authentication failed")
+        else:
+            self.logger.fail(f"{domain}\\{username}:{process_secret(password)} {last_error or 'Access denied'}")
+        return False
 
     def hash_login(self, domain, username, ntlm_hash):
         self.username = username
@@ -245,30 +326,52 @@ class rpc(connection):
             self.lmhash, self.nthash = ntlm_hash.split(":")
         else:
             self.nthash = ntlm_hash
-        try:
-            string_binding = epm.hept_map(self.host, MSRPC_UUID_SAMR, protocol="ncacn_ip_tcp")
-            rpctransport = transport.DCERPCTransportFactory(string_binding)
-            rpctransport.setRemoteHost(self.host)
-            rpctransport.set_connect_timeout(self.args.rpc_timeout)
-            rpctransport.set_credentials(username, self.password, domain, self.lmhash, self.nthash)
-            dce = rpctransport.get_dce_rpc()
-            dce.set_auth_type(RPC_C_AUTHN_WINNT)
-            dce.set_auth_level(RPC_C_AUTHN_LEVEL_PKT_PRIVACY)
-            dce.connect()
-            dce.bind(MSRPC_UUID_SAMR)
-            samr.hSamrConnect(dce)
-            dce.disconnect()
-            out = f"{domain}\\{username}:{process_secret(self.nthash)} {self.mark_pwned()}"
-            self.logger.success(out)
-            return True
-        except Exception as e:
-            error_msg = str(e)
-            if "STATUS_LOGON_FAILURE" in error_msg or "SEC_E_LOGON_DENIED" in error_msg or "STATUS_ACCESS_DENIED" in error_msg:
-                error_msg = "Authentication failed"
-            elif "rpc_s_access_denied" in error_msg:
-                error_msg = "Access denied"
-            self.logger.fail(f"{domain}\\{username}:{process_secret(self.nthash)} {error_msg}")
-            return False
+        last_error = None
+        
+        bindings_to_try = []
+        for interface_uuid, interface_name in [(MSRPC_UUID_SAMR, "samr"), (MSRPC_UUID_LSAT, "lsarpc")]:
+            try:
+                tcp_binding = epm.hept_map(self.host, interface_uuid, protocol="ncacn_ip_tcp")
+                bindings_to_try.append((interface_uuid, interface_name, tcp_binding, "tcp"))
+            except Exception:
+                pass
+            bindings_to_try.append((interface_uuid, interface_name, f"ncacn_np:{self.host}[\\pipe\\{interface_name}]", "np"))
+        
+        for interface_uuid, interface_name, string_binding, transport_type in bindings_to_try:
+            try:
+                self.logger.debug(f"Trying {interface_name} via {transport_type}: {string_binding}")
+                rpctransport = transport.DCERPCTransportFactory(string_binding)
+                rpctransport.setRemoteHost(self.host)
+                rpctransport.set_connect_timeout(self.args.rpc_timeout)
+                rpctransport.set_credentials(username, self.password, domain, self.lmhash, self.nthash)
+                dce = rpctransport.get_dce_rpc()
+                dce.set_auth_type(RPC_C_AUTHN_WINNT)
+                dce.set_auth_level(RPC_C_AUTHN_LEVEL_PKT_PRIVACY)
+                dce.connect()
+                dce.bind(interface_uuid)
+                if interface_uuid == MSRPC_UUID_SAMR:
+                    samr.hSamrConnect(dce)
+                else:
+                    lsad.hLsarOpenPolicy(dce, lsad.POLICY_VIEW_LOCAL_INFORMATION)
+                dce.disconnect()
+                out = f"{domain}\\{username}:{process_secret(self.nthash)} {self.mark_pwned()}"
+                self.logger.success(out)
+                return True
+            except Exception as e:
+                last_error = str(e)
+                self.logger.debug(f"Auth via {interface_name}/{transport_type} failed: {last_error}")
+                if "STATUS_LOGON_FAILURE" in last_error:
+                    self.logger.fail(f"{domain}\\{username}:{process_secret(self.nthash)} Authentication failed")
+                    return False
+                continue
+        
+        if last_error and ("rpc_s_access_denied" in last_error or "connection" in last_error.lower()):
+            self.logger.fail(f"{domain}\\{username}:{process_secret(self.nthash)} RPC auth requires SMB (port 445)")
+        elif "STATUS_ACCESS_DENIED" in (last_error or ""):
+            self.logger.fail(f"{domain}\\{username}:{process_secret(self.nthash)} Authentication failed")
+        else:
+            self.logger.fail(f"{domain}\\{username}:{process_secret(self.nthash)} {last_error or 'Access denied'}")
+        return False
 
     def get_dce_rpc(self, interface_uuid, named_pipe=None, use_tcp=False):
         is_anonymous = not self.username and not self.password and not self.nthash
@@ -310,11 +413,8 @@ class rpc(connection):
         return self.samr_dce
 
     def get_samr_dce_np(self):
-        """Get SAMR DCE over SMB transport (required for password operations)"""
-        rpctransport = transport.SMBTransport(self.host, filename=r"\samr")
-        rpctransport.set_credentials(self.username, self.password, self.domain, self.lmhash, self.nthash, self.aesKey)
-        if self.doKerberos:
-            rpctransport.set_kerberos(True, self.kdcHost)
+        smb_conn = self.get_smb_connection()
+        rpctransport = transport.SMBTransport(self.host, filename=r"\samr", smb_connection=smb_conn)
         dce = rpctransport.get_dce_rpc()
         dce.connect()
         dce.bind(MSRPC_UUID_SAMR)
@@ -327,7 +427,11 @@ class rpc(connection):
 
     def get_smb_connection(self):
         if not self.smb_conn:
-            self.smb_conn = SMBConnection(self.hostname or self.host, self.host, timeout=self.args.rpc_timeout)
+            self.smb_conn = SMBConnection(
+                self.hostname or self.host,
+                self.host,
+                timeout=self.args.rpc_timeout if hasattr(self.args, "rpc_timeout") else 5
+            )
             if self.doKerberos:
                 self.smb_conn.kerberosLogin(
                     self.username,
@@ -344,8 +448,8 @@ class rpc(connection):
 
     def get_srvs_dce(self):
         if not self.srvs_dce:
-            smb = self.get_smb_connection()
-            rpctransport = transport.SMBTransport(self.host, filename=r"\srvsvc", smb_connection=smb)
+            smb_conn = self.get_smb_connection()
+            rpctransport = transport.SMBTransport(self.host, filename=r"\srvsvc", smb_connection=smb_conn)
             dce = rpctransport.get_dce_rpc()
             dce.connect()
             dce.bind(MSRPC_UUID_SRVS)
@@ -354,8 +458,8 @@ class rpc(connection):
 
     def get_wkst_dce(self):
         if not self.wkst_dce:
-            smb = self.get_smb_connection()
-            rpctransport = transport.SMBTransport(self.host, filename=r"\wkssvc", smb_connection=smb)
+            smb_conn = self.get_smb_connection()
+            rpctransport = transport.SMBTransport(self.host, filename=r"\wkssvc", smb_connection=smb_conn)
             dce = rpctransport.get_dce_rpc()
             dce.connect()
             dce.bind(MSRPC_UUID_WKST)
@@ -478,11 +582,20 @@ class rpc(connection):
             self.logger.highlight(f"Total Users: {info['UserCount']}")
             self.logger.highlight(f"Total Groups: {info['GroupCount']}")
             self.logger.highlight(f"Total Aliases: {info['AliasCount']}")
-            self.logger.highlight(f"Sequence: {info['Sequence']}")
-            self.logger.highlight(f"Force Logoff: {info['ForceLogoff']}")
+            with contextlib.suppress(Exception):
+                seq = info["SequenceNumber"] if "SequenceNumber" in info.fields else info.fields.get("Sequence", 0)
+                if hasattr(seq, "__getitem__") and "HighPart" in seq.fields:
+                    seq = (seq["HighPart"] << 32) | seq["LowPart"]
+                self.logger.highlight(f"Sequence: {seq}")
+            with contextlib.suppress(Exception):
+                logoff = info["ForceLogoff"]
+                if hasattr(logoff, "__getitem__") and "HighPart" in logoff.fields:
+                    logoff = (logoff["HighPart"] << 32) | logoff["LowPart"]
+                self.logger.highlight(f"Force Logoff: {logoff}")
             self.logger.highlight(f"Domain Server State: {info['DomainServerState']}")
             self.logger.highlight(f"Server Role: {info['DomainServerRole']}")
-            self.logger.highlight(f"Unknown3: {info['Unknown3']}")
+            with contextlib.suppress(Exception):
+                self.logger.highlight(f"Unknown3: {info['Unknown3']}")
         except Exception as e:
             self.logger.fail(f"querydominfo failed: {e}")
 
@@ -679,6 +792,49 @@ class rpc(connection):
             samr.hSamrCloseHandle(dce, user_handle)
         except Exception as e:
             self.logger.fail(f"queryuser failed: {e}")
+
+    def user_groups(self):
+        """queryusergroups - Get groups for a user"""
+        user_input = self.args.user_groups
+        self.logger.info(f"Querying user groups (queryusergroups {user_input})")
+        try:
+            self.open_samr_domain()
+            dce = self.get_samr_dce()
+            if user_input.startswith("0x"):
+                rid = int(user_input, 16)
+            elif user_input.isdigit():
+                rid = int(user_input)
+            else:
+                resp = samr.hSamrLookupNamesInDomain(dce, self.domain_handle, [user_input])
+                rid = resp["RelativeIds"]["Element"][0]["Data"]
+            resp = samr.hSamrOpenUser(dce, self.domain_handle, MAXIMUM_ALLOWED, rid)
+            user_handle = resp["UserHandle"]
+            resp = samr.hSamrGetGroupsForUser(dce, user_handle)
+            groups = resp["Groups"]["Groups"]
+            if not groups:
+                self.logger.display(f"User {user_input} is not a member of any groups")
+            else:
+                self.logger.success(f"User {user_input} is a member of {len(groups)} group(s)")
+                for g in groups:
+                    group_rid = g["RelativeId"]
+                    attrs = g["Attributes"]
+                    attr_flags = []
+                    if attrs & 0x00000001:
+                        attr_flags.append("MANDATORY")
+                    if attrs & 0x00000002:
+                        attr_flags.append("ENABLED_BY_DEFAULT")
+                    if attrs & 0x00000004:
+                        attr_flags.append("ENABLED")
+                    attr_str = ", ".join(attr_flags) if attr_flags else "NONE"
+                    try:
+                        resp_lookup = samr.hSamrLookupIdsInDomain(dce, self.domain_handle, [group_rid])
+                        group_name = resp_lookup["Names"]["Element"][0]["Data"]
+                        self.logger.highlight(f"  rid:[0x{group_rid:x}] group:[{group_name}] attr:[{attr_str}]")
+                    except Exception:
+                        self.logger.highlight(f"  rid:[0x{group_rid:x}] attr:[{attr_str}]")
+            samr.hSamrCloseHandle(dce, user_handle)
+        except Exception as e:
+            self.logger.fail(f"queryusergroups failed: {e}")
 
     def group(self):
         """querygroup"""
@@ -943,7 +1099,7 @@ class rpc(connection):
         """lookupsids"""
         sids_str = self.args.lsa_lookup_sids
         sids = [s.strip() for s in sids_str.split(",")]
-        self.logger.info(f"Looking up SIDs (lookupsids)")
+        self.logger.info("Looking up SIDs (lookupsids)")
         try:
             dce = self.get_lsa_dce()
             resp = lsad.hLsarOpenPolicy(dce, lsat.POLICY_LOOKUP_NAMES)
@@ -966,7 +1122,7 @@ class rpc(connection):
         """lookupnames via LSA"""
         names_str = self.args.lsa_lookup_names
         names = [n.strip() for n in names_str.split(",")]
-        self.logger.info(f"Looking up names via LSA")
+        self.logger.info("Looking up names via LSA")
         try:
             dce = self.get_lsa_dce()
             resp = lsad.hLsarOpenPolicy(dce, lsat.POLICY_LOOKUP_NAMES)
@@ -1035,8 +1191,8 @@ class rpc(connection):
                 break
             type_names = {0: "ACCESS ALLOWED", 1: "ACCESS DENIED", 2: "SYSTEM AUDIT"}
             type_str = type_names.get(ace_type, f"TYPE_{ace_type}")
-            self.logger.highlight(f"\t---")
-            self.logger.highlight(f"\tACE")
+            self.logger.highlight("\t---")
+            self.logger.highlight("\tACE")
             self.logger.highlight(f"\t\ttype: {type_str} ({ace_type}) flags: 0x{ace_flags:02x}")
             if ace_size >= 8:
                 mask = struct.unpack("<I", sd_bytes[ace_offset + 4:ace_offset + 8])[0]
@@ -1078,7 +1234,7 @@ class rpc(connection):
         """lookupnames via SAMR"""
         names_str = self.args.lookup_names
         names = [n.strip() for n in names_str.split(",")]
-        self.logger.info(f"Looking up names (lookupnames)")
+        self.logger.info("Looking up names (lookupnames)")
         try:
             self.open_samr_domain()
             dce = self.get_samr_dce()
@@ -1202,13 +1358,26 @@ class rpc(connection):
         username = self.args.delete_user
         self.logger.info(f"Deleting user (deletedomuser {username})")
         try:
-            self.open_samr_domain()
-            dce = self.get_samr_dce()
-            resp = samr.hSamrLookupNamesInDomain(dce, self.domain_handle, [username])
+            dce = self.get_samr_dce_np()
+            resp = samr.hSamrConnect(dce)
+            server_handle = resp["ServerHandle"]
+            resp = samr.hSamrEnumerateDomainsInSamServer(dce, server_handle)
+            domains = resp["Buffer"]["Buffer"]
+            domain_name = None
+            for d in domains:
+                if d["Name"].lower() != "builtin":
+                    domain_name = d["Name"]
+                    break
+            resp = samr.hSamrLookupDomainInSamServer(dce, server_handle, domain_name)
+            domain_sid = resp["DomainId"]
+            resp = samr.hSamrOpenDomain(dce, server_handle, domainId=domain_sid)
+            domain_handle = resp["DomainHandle"]
+            resp = samr.hSamrLookupNamesInDomain(dce, domain_handle, [username])
             rid = resp["RelativeIds"]["Element"][0]
-            resp = samr.hSamrOpenUser(dce, self.domain_handle, MAXIMUM_ALLOWED, rid)
+            resp = samr.hSamrOpenUser(dce, domain_handle, MAXIMUM_ALLOWED, rid)
             user_handle = resp["UserHandle"]
             samr.hSamrDeleteUser(dce, user_handle)
+            dce.disconnect()
             self.logger.success(f"Deleted user {username}")
         except Exception as e:
             self.logger.fail(f"deletedomuser failed: {e}")
@@ -1440,10 +1609,8 @@ class rpc(connection):
         self.logger.info(f"Resetting password for {username} (setuserinfo2 level 24)")
         try:
             from Cryptodome.Cipher import ARC4
-            rpctransport = transport.SMBTransport(self.host, filename=r"\samr")
-            rpctransport.set_credentials(self.username, self.password, self.domain, self.lmhash, self.nthash, self.aesKey)
-            if self.doKerberos:
-                rpctransport.set_kerberos(True, self.kdcHost)
+            smb_conn = self.get_smb_connection()
+            rpctransport = transport.SMBTransport(self.host, filename=r"\samr", smb_connection=smb_conn)
             dce = rpctransport.get_dce_rpc()
             dce.connect()
             dce.bind(MSRPC_UUID_SAMR)
