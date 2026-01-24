@@ -188,7 +188,6 @@ netexec smb TARGET_HOST -u TEST_USER_FILE -H tests/data/test_hashes.txt
 ##### RPC operations via SMB protocol
 ##### Basic usage with authentication
 netexec smb TARGET_HOST -u LOGIN_USERNAME -p LOGIN_PASSWORD
-netexec {DNS} smb TARGET_HOST -u LOGIN_USERNAME -p LOGIN_PASSWORD
 
 ##### Server/Domain Information
 netexec smb TARGET_HOST -u LOGIN_USERNAME -p LOGIN_PASSWORD --rpc-server-info
@@ -227,11 +226,11 @@ netexec smb TARGET_HOST -u LOGIN_USERNAME -p LOGIN_PASSWORD --lsa-query-security
 netexec smb TARGET_HOST -u LOGIN_USERNAME -p LOGIN_PASSWORD --sam-lookup domain LOGIN_USERNAME
 netexec smb TARGET_HOST -u LOGIN_USERNAME -p LOGIN_PASSWORD --sam-lookup builtin Administrators
 
-##### Anonymous Enumeration (may work on misconfigured systems)
+##### Anonymous Enumeration
 netexec smb TARGET_HOST -u '' -p '' --rid-brute
 netexec smb TARGET_HOST --rid-brute
 
-##### User/Group Management (requires admin - commented out to avoid unintended changes)
+##### User/Group Management
 #netexec smb TARGET_HOST -u LOGIN_USERNAME -p LOGIN_PASSWORD --create-user testuser:P@ssw0rd123
 #netexec smb TARGET_HOST -u LOGIN_USERNAME -p LOGIN_PASSWORD --delete-user testuser
 #netexec smb TARGET_HOST -u LOGIN_USERNAME -p LOGIN_PASSWORD --enable-user testuser
