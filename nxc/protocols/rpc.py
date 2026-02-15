@@ -632,9 +632,7 @@ class rpc(smb):
                 return
             
             self.logger.success(f"Found {len(entries)} user(s)")
-            self.logger.display("")
-            self.logger.display(f"{'RID':<6} {'Username':<30} {'Last PW Set':<20} {'BadPW':<7} {'Description':<50}")
-            self.logger.display("-" * 113)
+            self.logger.highlight(f"{'-RID-':<6} {'-Username-':<30} {'-Last PW Set-':<20} {'-BadPW-':<7} {'-Description-':<60}")
             
             for entry in entries:
                 rid = entry["Rid"]
@@ -654,10 +652,8 @@ class rpc(smb):
                     pw_last_set = "N/A"
                     bad_pw_count = 0
                 
-                self.logger.highlight(f"{rid:<6} {username:<30} {pw_last_set:<20} {bad_pw_count:<7} {description:<50}")
+                self.logger.highlight(f"{rid:<6} {username:<30} {pw_last_set:<20} {bad_pw_count:<7} {description:<60}")
                 self.db.add_user(self.domain, username, rid=rid)
-            
-            self.logger.display("")
         except Exception as e:
             self.logger.fail(f"User enumeration failed: {e}")
             self.logger.info("Try --rid-brute for anonymous enumeration")
