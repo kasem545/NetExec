@@ -1,5 +1,4 @@
 import os
-import ntpath
 import contextlib
 from types import ModuleType
 from importlib.machinery import SourceFileLoader
@@ -10,11 +9,9 @@ import nxc
 from impacket import ntlm
 from impacket.uuid import uuidtup_to_bin
 from impacket.krb5.ccache import CCache
-from impacket.smbconnection import SMBConnection, SessionError
-from impacket.smb3structs import FILE_SHARE_WRITE, FILE_SHARE_DELETE
+from impacket.smbconnection import SMBConnection
 from impacket.dcerpc.v5.dtypes import NULL, MAXIMUM_ALLOWED
 from impacket.dcerpc.v5 import transport, epm, samr, lsat, lsad, srvs, wkst
-from nxc.helpers.misc import gen_random_string
 from impacket.dcerpc.v5.rpcrt import (
     RPC_C_AUTHN_LEVEL_PKT_PRIVACY,
     RPC_C_AUTHN_LEVEL_PKT_INTEGRITY,
@@ -946,59 +943,6 @@ class rpc(smb):
             self.logger.success(f"Found {len(found)} principal(s)")
         except Exception as e:
             self.logger.fail(f"RID brute failed: {e}")
-
-    def shares(self):
-        """netshareenumall"""
-        self.logger.info("Enumerating shares (netshareenumall)")
-        try:
-            dce = self.get_srvs_dce()
-            resp = srvs.hNetrShareEnum(dce, 1)
-            shares = resp["InfoStruct"]["ShareInfo"]["Level1"]["Buffer"]
-            self.logger.success(f"Found {len(shares)} share(s)")
-            
-            smb_conn = None
-            try:
-                smb_conn = self.get_smb_connection()
-                temp_dir = ntpath.normpath("\\" + gen_random_string())
-                temp_file = ntpath.normpath("\\" + gen_random_string() + ".txt")
-            except Exception as e:
-                self.logger.debug(f"SMB connection for permission testing unavailable: {e}")
-            
-            self.logger.highlight(f"{'Share':<15} {'Permissions':<15} {'Remark'}")
-            self.logger.highlight(f"{'-----':<15} {'-----------':<15} {'------'}")
-            
-            for s in shares:
-                share_name = s["shi1_netname"]
-                share_remark = s["shi1_remark"]
-                permissions = []
-                
-                if smb_conn:
-                    try:
-                        smb_conn.listPath(share_name, "*")
-                        permissions.append("READ")
-                    except (SessionError, Exception):
-                        pass
-                    
-                    try:
-                        smb_conn.createDirectory(share_name, temp_dir)
-                        permissions.append("WRITE")
-                        with contextlib.suppress(SessionError, Exception):
-                            smb_conn.deleteDirectory(share_name, temp_dir)
-                    except (SessionError, Exception):
-                        try:
-                            tid = smb_conn.connectTree(share_name)
-                            fid = smb_conn.createFile(tid, temp_file, desiredAccess=FILE_SHARE_WRITE, shareMode=FILE_SHARE_DELETE)
-                            smb_conn.closeFile(tid, fid)
-                            permissions.append("WRITE")
-                            with contextlib.suppress(SessionError, Exception):
-                                smb_conn.deleteFile(share_name, temp_file)
-                        except (SessionError, Exception):
-                            pass
-                
-                perms_str = ",".join(permissions)
-                self.logger.highlight(f"{share_name:<15} {perms_str:<15} {share_remark}")
-        except Exception as e:
-            self.logger.fail(f"netshareenum failed: {e}")
 
     def sessions(self):
         """netsessenum"""
