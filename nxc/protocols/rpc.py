@@ -1,4 +1,5 @@
 import os
+import ntpath
 import contextlib
 from types import ModuleType
 from importlib.machinery import SourceFileLoader
@@ -9,9 +10,11 @@ import nxc
 from impacket import ntlm
 from impacket.uuid import uuidtup_to_bin
 from impacket.krb5.ccache import CCache
-from impacket.smbconnection import SMBConnection
+from impacket.smbconnection import SMBConnection, SessionError
+from impacket.smb3structs import FILE_SHARE_WRITE, FILE_SHARE_DELETE
 from impacket.dcerpc.v5.dtypes import NULL, MAXIMUM_ALLOWED
 from impacket.dcerpc.v5 import transport, epm, samr, lsat, lsad, srvs, wkst
+from nxc.helpers.misc import gen_random_string
 from impacket.dcerpc.v5.rpcrt import (
     RPC_C_AUTHN_LEVEL_PKT_PRIVACY,
     RPC_C_AUTHN_LEVEL_PKT_INTEGRITY,
@@ -942,44 +945,46 @@ class rpc(smb):
             resp = srvs.hNetrShareEnum(dce, 1)
             shares = resp["InfoStruct"]["ShareInfo"]["Level1"]["Buffer"]
             self.logger.success(f"Found {len(shares)} share(s)")
+            
+            smb_conn = self.get_smb_connection()
+            temp_dir = ntpath.normpath("\\" + gen_random_string())
+            temp_file = ntpath.normpath("\\" + gen_random_string() + ".txt")
+            
             self.logger.highlight(f"{'Share':<15} {'Permissions':<15} {'Remark'}")
             self.logger.highlight(f"{'-----':<15} {'-----------':<15} {'------'}")
+            
             for s in shares:
                 share_name = s["shi1_netname"]
                 share_remark = s["shi1_remark"]
-                self.logger.highlight(f"{share_name:<15} {'':<15} {share_remark}")
+                permissions = []
+                
+                if smb_conn:
+                    try:
+                        smb_conn.listPath(share_name, "*")
+                        permissions.append("READ")
+                    except (SessionError, Exception):
+                        pass
+                    
+                    try:
+                        smb_conn.createDirectory(share_name, temp_dir)
+                        permissions.append("WRITE")
+                        with contextlib.suppress(SessionError, Exception):
+                            smb_conn.deleteDirectory(share_name, temp_dir)
+                    except (SessionError, Exception):
+                        try:
+                            tid = smb_conn.connectTree(share_name)
+                            fid = smb_conn.createFile(tid, temp_file, desiredAccess=FILE_SHARE_WRITE, shareMode=FILE_SHARE_DELETE)
+                            smb_conn.closeFile(tid, fid)
+                            permissions.append("WRITE")
+                            with contextlib.suppress(SessionError, Exception):
+                                smb_conn.deleteFile(share_name, temp_file)
+                        except (SessionError, Exception):
+                            pass
+                
+                perms_str = ",".join(permissions)
+                self.logger.highlight(f"{share_name:<15} {perms_str:<15} {share_remark}")
         except Exception as e:
             self.logger.fail(f"netshareenum failed: {e}")
-
-    def share(self):
-        share_name = self.args.share
-        if not share_name.endswith("\x00"):
-            share_name += "\x00"
-        self.logger.info(f"Getting share info (netsharegetinfo {self.args.share})")
-        try:
-            dce = self.get_srvs_dce()
-            try:
-                resp = srvs.hNetrShareGetInfo(dce, share_name, 2)
-                info = resp["InfoStruct"]["ShareInfo2"]
-                stype = info["shi2_type"] & 0xFFFF
-                type_str = {0: "Disk", 1: "Printer", 2: "Device", 3: "IPC"}.get(stype, "Unknown")
-                self.logger.highlight(f"netname: {info['shi2_netname']}")
-                self.logger.highlight(f"type: {type_str} (0x{info['shi2_type']:x})")
-                self.logger.highlight(f"remark: {info['shi2_remark']}")
-                self.logger.highlight(f"permissions: {info['shi2_permissions']}")
-                self.logger.highlight(f"max_uses: {info['shi2_max_uses']}")
-                self.logger.highlight(f"current_uses: {info['shi2_current_uses']}")
-                self.logger.highlight(f"path: {info['shi2_path']}")
-            except Exception:
-                resp = srvs.hNetrShareGetInfo(dce, share_name, 1)
-                info = resp["InfoStruct"]["ShareInfo1"]
-                stype = info["shi1_type"] & 0xFFFF
-                type_str = {0: "Disk", 1: "Printer", 2: "Device", 3: "IPC"}.get(stype, "Unknown")
-                self.logger.highlight(f"netname: {info['shi1_netname']}")
-                self.logger.highlight(f"type: {type_str} (0x{info['shi1_type']:x})")
-                self.logger.highlight(f"remark: {info['shi1_remark']}")
-        except Exception as e:
-            self.logger.fail(f"netsharegetinfo failed: {e}")
 
     def sessions(self):
         """netsessenum"""
