@@ -528,7 +528,7 @@ class rpc(smb):
             self.logger.highlight(f"Server Name: {info['sv101_name']}")
             self.logger.highlight(f"Server Comment: {info['sv101_comment']}")
             self.logger.highlight(f"Server Version: {info['sv101_version_major']}.{info['sv101_version_minor']}")
-            self.logger.highlight(f"Server Type: 0x{info['sv101_type']:x}")
+            self.logger.highlight(f"Server Type: {info['sv101_type']}")
         except Exception as e:
             self.logger.fail(f"srvinfo failed: {e}")
 
@@ -585,7 +585,7 @@ class rpc(smb):
                 self.logger.highlight(f"Domain: {name} ({flat_name})")
                 self.logger.highlight(f"  SID: {sid}")
                 self.logger.highlight(f"  Direction: {direction} | Type: {trust_type}")
-                self.logger.highlight(f"  Attributes: {attr_str} (0x{attrs:x})")
+                self.logger.highlight(f"  Attributes: {attr_str} ({attrs})")
         except Exception as e:
             if "STATUS_NO_MORE_ENTRIES" in str(e):
                 self.logger.display("No trusted domains found")
@@ -692,7 +692,7 @@ class rpc(smb):
             for g in groups:
                 group_name = g["Name"]
                 rid = g["RelativeId"]
-                sid = f"{self.domain_sid}-{rid}" if self.domain_sid else f"RID-{rid}"
+                sid = f"{self.domain_sid.formatCanonical()}-{rid}" if self.domain_sid else f"RID-{rid}"
                 self.logger.highlight(f"{group_name:<50} {sid:<60}")
                 self.db.add_group(self.domain, group_name, rid=rid)
         except Exception as e:
@@ -803,9 +803,9 @@ class rpc(smb):
             self.logger.highlight(f"Password Last Set: {self.filetime_to_str(info['PasswordLastSet']['LowPart'], info['PasswordLastSet']['HighPart'])}")
             self.logger.highlight(f"Password Can Change: {self.filetime_to_str(info['PasswordCanChange']['LowPart'], info['PasswordCanChange']['HighPart'])}")
             self.logger.highlight(f"Password Must Change: {self.filetime_to_str(info['PasswordMustChange']['LowPart'], info['PasswordMustChange']['HighPart'])}")
-            self.logger.highlight(f"User RID: 0x{rid:x} ({rid})")
-            self.logger.highlight(f"Primary Group RID: 0x{info['PrimaryGroupId']:x} ({info['PrimaryGroupId']})")
-            self.logger.highlight(f"Account Control: 0x{uac:08x} ({', '.join(uac_flags) if uac_flags else 'NONE'})")
+            self.logger.highlight(f"User RID: {rid}")
+            self.logger.highlight(f"Primary Group RID: {info['PrimaryGroupId']}")
+            self.logger.highlight(f"Account Control: {uac} ({', '.join(uac_flags) if uac_flags else 'NONE'})")
             self.logger.highlight(f"Bad Password Count: {info['BadPasswordCount']}")
             self.logger.highlight(f"Logon Count: {info['LogonCount']}")
             try:
@@ -855,9 +855,9 @@ class rpc(smb):
                     try:
                         resp_lookup = samr.hSamrLookupIdsInDomain(dce, self.domain_handle, [group_rid])
                         group_name = resp_lookup["Names"]["Element"][0]["Data"]
-                        self.logger.highlight(f"  rid:[0x{group_rid:x}] group:[{group_name}] attr:[{attr_str}]")
+                        self.logger.highlight(f"  rid:[{group_rid}] group:[{group_name}] attr:[{attr_str}]")
                     except Exception:
-                        self.logger.highlight(f"  rid:[0x{group_rid:x}] attr:[{attr_str}]")
+                        self.logger.highlight(f"  rid:[{group_rid}] attr:[{attr_str}]")
             samr.hSamrCloseHandle(dce, user_handle)
         except Exception as e:
             self.logger.fail(f"queryusergroups failed: {e}")
@@ -1231,7 +1231,7 @@ class rpc(smb):
             if ace_size >= 8:
                 mask = struct.unpack("<I", sd_bytes[ace_offset + 4:ace_offset + 8])[0]
                 specific = mask & 0xFFFF
-                self.logger.highlight(f"\t\tSpecific bits: 0x{specific:x}")
+                self.logger.highlight(f"\t\tSpecific bits: {specific}")
                 perms = []
                 if mask & 0x80000:
                     perms.append("WRITE_OWNER_ACCESS")
@@ -1241,7 +1241,7 @@ class rpc(smb):
                     perms.append("READ_CONTROL_ACCESS")
                 if mask & 0x10000:
                     perms.append("DELETE_ACCESS")
-                self.logger.highlight(f"\t\tPermissions: 0x{mask:x}: {' '.join(perms)}")
+                self.logger.highlight(f"\t\tPermissions: {mask}: {' '.join(perms)}")
                 sid_offset = ace_offset + 8
                 sid_len = ace_size - 8
                 if sid_len > 0:
@@ -1384,7 +1384,7 @@ class rpc(smb):
             samr.hSamrSetInformationUser2(dce, user_handle, user_control)
             samr.hSamrCloseHandle(dce, user_handle)
             dce.disconnect()
-            self.logger.success(f"Created user {username} with RID 0x{rid:x}")
+            self.logger.success(f"Created user {username} with RID {rid}")
         except Exception as e:
             self.logger.fail(f"createdomuser failed: {e}")
 
@@ -1441,7 +1441,7 @@ class rpc(smb):
             resp = samr.hSamrQueryInformationUser(dce, user_handle, samr.USER_INFORMATION_CLASS.UserControlInformation)
             uac = resp["Buffer"]["Control"]["UserAccountControl"]
             if not (uac & samr.USER_ACCOUNT_DISABLED):
-                self.logger.display(f"User {username} is already enabled (UAC: 0x{uac:x})")
+                self.logger.display(f"User {username} is already enabled (UAC: {uac})")
                 samr.hSamrCloseHandle(dce, user_handle)
                 dce.disconnect()
                 return
@@ -1452,7 +1452,7 @@ class rpc(smb):
             samr.hSamrSetInformationUser2(dce, user_handle, user_control)
             samr.hSamrCloseHandle(dce, user_handle)
             dce.disconnect()
-            self.logger.success(f"Enabled user {username} (UAC: 0x{uac:x} -> 0x{new_uac:x})")
+            self.logger.success(f"Enabled user {username} (UAC: {uac} -> {new_uac})")
         except Exception as e:
             self.logger.fail(f"Enable user failed: {e}")
 
@@ -1481,7 +1481,7 @@ class rpc(smb):
             resp = samr.hSamrQueryInformationUser(dce, user_handle, samr.USER_INFORMATION_CLASS.UserControlInformation)
             uac = resp["Buffer"]["Control"]["UserAccountControl"]
             if uac & samr.USER_ACCOUNT_DISABLED:
-                self.logger.display(f"User {username} is already disabled (UAC: 0x{uac:x})")
+                self.logger.display(f"User {username} is already disabled (UAC: {uac})")
                 samr.hSamrCloseHandle(dce, user_handle)
                 dce.disconnect()
                 return
@@ -1492,7 +1492,7 @@ class rpc(smb):
             samr.hSamrSetInformationUser2(dce, user_handle, user_control)
             samr.hSamrCloseHandle(dce, user_handle)
             dce.disconnect()
-            self.logger.success(f"Disabled user {username} (UAC: 0x{uac:x} -> 0x{new_uac:x})")
+            self.logger.success(f"Disabled user {username} (UAC: {uac} -> {new_uac})")
         except Exception as e:
             self.logger.fail(f"Disable user failed: {e}")
 
@@ -1608,7 +1608,7 @@ class rpc(smb):
             resp = samr.hSamrCreateGroupInDomain(dce, self.domain_handle, group_name, MAXIMUM_ALLOWED)
             rid = resp["RelativeId"]
             samr.hSamrCloseHandle(dce, resp["GroupHandle"])
-            self.logger.success(f"Created group {group_name} with RID 0x{rid:x}")
+            self.logger.success(f"Created group {group_name} with RID {rid}")
         except Exception as e:
             self.logger.fail(f"createdomgroup failed: {e}")
 
