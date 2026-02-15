@@ -688,9 +688,13 @@ class rpc(smb):
             resp = samr.hSamrEnumerateGroupsInDomain(dce, self.domain_handle)
             groups = resp["Buffer"]["Buffer"]
             self.logger.success(f"Found {len(groups)} group(s)")
+            self.logger.highlight(f"{'-Group-':<50} {'-SID-':<60}")
             for g in groups:
-                self.logger.highlight(f"group:[{g['Name']}] rid:[0x{g['RelativeId']:x}]")
-                self.db.add_group(self.domain, g["Name"], rid=g["RelativeId"])
+                group_name = g["Name"]
+                rid = g["RelativeId"]
+                sid = f"{self.domain_sid}-{rid}" if self.domain_sid else f"RID-{rid}"
+                self.logger.highlight(f"{group_name:<50} {sid:<60}")
+                self.db.add_group(self.domain, group_name, rid=rid)
         except Exception as e:
             self.logger.fail(f"enumdomgroups failed: {e}")
 
@@ -703,8 +707,12 @@ class rpc(smb):
             resp = samr.hSamrEnumerateAliasesInDomain(dce, self.builtin_handle)
             aliases = resp["Buffer"]["Buffer"]
             self.logger.success(f"Found {len(aliases)} alias(es)")
+            self.logger.highlight(f"{'-Group-':<50} {'-SID-':<60}")
             for a in aliases:
-                self.logger.highlight(f"group:[{a['Name']}] rid:[0x{a['RelativeId']:x}]")
+                group_name = a["Name"]
+                rid = a["RelativeId"]
+                sid = f"S-1-5-32-{rid}"
+                self.logger.highlight(f"{group_name:<50} {sid:<60}")
         except Exception as e:
             self.logger.fail(f"enumalsgroups failed: {e}")
 
