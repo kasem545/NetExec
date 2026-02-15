@@ -466,10 +466,10 @@ class rpc(smb):
     def get_srvs_dce(self):
         if not self.srvs_dce:
             try:
-                self.srvs_dce = self.get_dce_rpc(MSRPC_UUID_SRVS, "srvsvc")
+                self.srvs_dce = self.get_dce_rpc(MSRPC_UUID_SRVS, "srvsvc", use_tcp=True)
             except Exception as e:
-                if "timed out" in str(e).lower():
-                    self.logger.debug(f"SRVS connection failed ({e}), retrying with fallback")
+                if "timed out" in str(e).lower() or "connection" in str(e).lower() or "authentication type" in str(e).lower():
+                    self.logger.debug(f"SRVS TCP failed ({e}), trying named pipe")
                     self.srvs_dce = self.get_dce_rpc(MSRPC_UUID_SRVS, "srvsvc", use_tcp=False)
                 else:
                     raise
