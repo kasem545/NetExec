@@ -942,14 +942,12 @@ class rpc(smb):
             resp = srvs.hNetrShareEnum(dce, 1)
             shares = resp["InfoStruct"]["ShareInfo"]["Level1"]["Buffer"]
             self.logger.success(f"Found {len(shares)} share(s)")
-            self.logger.highlight(f"{'Share':<15} {'Type':<12} {'Permissions':<15} {'Remark'}")
-            self.logger.highlight(f"{'-----':<15} {'----':<12} {'-----------':<15} {'------'}")
+            self.logger.highlight(f"{'Share':<15} {'Permissions':<15} {'Remark'}")
+            self.logger.highlight(f"{'-----':<15} {'-----------':<15} {'------'}")
             for s in shares:
                 share_name = s["shi1_netname"]
                 share_remark = s["shi1_remark"]
-                stype = s["shi1_type"] & 0xFFFF
-                type_str = {0: "Disk", 1: "Printer", 2: "Device", 3: "IPC"}.get(stype, "Unknown")
-                self.logger.highlight(f"{share_name:<15} {type_str:<12} {'':<15} {share_remark}")
+                self.logger.highlight(f"{share_name:<15} {'':<15} {share_remark}")
         except Exception as e:
             self.logger.fail(f"netshareenum failed: {e}")
 
