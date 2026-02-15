@@ -56,8 +56,6 @@ def proto_args(parser, parents):
     mgmt_group.add_argument("--enable-user", metavar="USER", type=str, help="Enable user account")
     mgmt_group.add_argument("--disable-user", metavar="USER", type=str, help="Disable user account")
     mgmt_group.add_argument("--set-user-info", nargs=3, metavar=("USER", "CLASS", "VALUE"), help="Set user info. Classes: fullname, description, comment, homedir, homedrive, script, profile, workstations, control, expires, primary-group, parameters, name (newuser:newfullname), logonhours (all/none/hex), preferences (country:codepage)")
-    mgmt_group.add_argument("--change-password", metavar="USER:OLD:NEW", type=str, help="Change password with old password")
-    mgmt_group.add_argument("--reset-password", metavar="USER:NEWPASS", type=str, help="Admin reset password")
     mgmt_group.add_argument("--create-group", metavar="GROUP", type=str, help="Create group")
     mgmt_group.add_argument("--delete-group", metavar="GROUP", type=str, help="Delete group")
     mgmt_group.add_argument("--add-to-group", metavar="USER:GROUP", type=str, help="Add user to group")
