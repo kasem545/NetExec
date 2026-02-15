@@ -292,7 +292,7 @@ class rpc(smb):
                 rpctransport.set_connect_timeout(self.args.rpc_timeout)
                 rpctransport.set_credentials(username, password, domain, self.lmhash, self.nthash)
                 dce = rpctransport.get_dce_rpc()
-                dce.set_auth_type(RPC_C_AUTHN_GSS_NEGOTIATE)
+                dce.set_auth_type(RPC_C_AUTHN_WINNT)
                 dce.set_auth_level(RPC_C_AUTHN_LEVEL_PKT_PRIVACY)
                 dce.connect()
                 dce.bind(interface_uuid)
@@ -348,7 +348,7 @@ class rpc(smb):
                 rpctransport.set_connect_timeout(self.args.rpc_timeout)
                 rpctransport.set_credentials(username, self.password, domain, self.lmhash, self.nthash)
                 dce = rpctransport.get_dce_rpc()
-                dce.set_auth_type(RPC_C_AUTHN_GSS_NEGOTIATE)
+                dce.set_auth_type(RPC_C_AUTHN_WINNT)
                 dce.set_auth_level(RPC_C_AUTHN_LEVEL_PKT_PRIVACY)
                 dce.connect()
                 dce.bind(interface_uuid)
@@ -400,7 +400,10 @@ class rpc(smb):
         
         dce = rpctransport.get_dce_rpc()
         if not is_anonymous:
-            dce.set_auth_type(RPC_C_AUTHN_GSS_NEGOTIATE)
+            if self.doKerberos:
+                dce.set_auth_type(RPC_C_AUTHN_GSS_NEGOTIATE)
+            else:
+                dce.set_auth_type(RPC_C_AUTHN_WINNT)
             dce.set_auth_level(RPC_C_AUTHN_LEVEL_PKT_PRIVACY)
         
         dce.connect()
