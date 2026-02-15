@@ -412,7 +412,14 @@ class rpc(smb):
 
     def get_samr_dce(self):
         if not self.samr_dce:
-            self.samr_dce = self.get_dce_rpc(MSRPC_UUID_SAMR, "samr", use_tcp=True)
+            try:
+                self.samr_dce = self.get_dce_rpc(MSRPC_UUID_SAMR, "samr", use_tcp=True)
+            except Exception as e:
+                if "timed out" in str(e).lower() or "connection" in str(e).lower():
+                    self.logger.debug(f"SAMR TCP failed ({e}), trying named pipe")
+                    self.samr_dce = self.get_dce_rpc(MSRPC_UUID_SAMR, "samr", use_tcp=False)
+                else:
+                    raise
         return self.samr_dce
 
     def get_samr_dce_np(self):
@@ -425,7 +432,14 @@ class rpc(smb):
 
     def get_lsa_dce(self):
         if not self.lsa_dce:
-            self.lsa_dce = self.get_dce_rpc(MSRPC_UUID_LSAT, "lsarpc")
+            try:
+                self.lsa_dce = self.get_dce_rpc(MSRPC_UUID_LSAT, "lsarpc")
+            except Exception as e:
+                if "timed out" in str(e).lower():
+                    self.logger.debug(f"LSA connection failed ({e}), retrying with fallback")
+                    self.lsa_dce = self.get_dce_rpc(MSRPC_UUID_LSAT, "lsarpc", use_tcp=False)
+                else:
+                    raise
         return self.lsa_dce
 
     def get_smb_connection(self):
@@ -451,22 +465,26 @@ class rpc(smb):
 
     def get_srvs_dce(self):
         if not self.srvs_dce:
-            smb_conn = self.get_smb_connection()
-            rpctransport = transport.SMBTransport(self.host, filename=r"\srvsvc", smb_connection=smb_conn)
-            dce = rpctransport.get_dce_rpc()
-            dce.connect()
-            dce.bind(MSRPC_UUID_SRVS)
-            self.srvs_dce = dce
+            try:
+                self.srvs_dce = self.get_dce_rpc(MSRPC_UUID_SRVS, "srvsvc")
+            except Exception as e:
+                if "timed out" in str(e).lower():
+                    self.logger.debug(f"SRVS connection failed ({e}), retrying with fallback")
+                    self.srvs_dce = self.get_dce_rpc(MSRPC_UUID_SRVS, "srvsvc", use_tcp=False)
+                else:
+                    raise
         return self.srvs_dce
 
     def get_wkst_dce(self):
         if not self.wkst_dce:
-            smb_conn = self.get_smb_connection()
-            rpctransport = transport.SMBTransport(self.host, filename=r"\wkssvc", smb_connection=smb_conn)
-            dce = rpctransport.get_dce_rpc()
-            dce.connect()
-            dce.bind(MSRPC_UUID_WKST)
-            self.wkst_dce = dce
+            try:
+                self.wkst_dce = self.get_dce_rpc(MSRPC_UUID_WKST, "wkssvc")
+            except Exception as e:
+                if "timed out" in str(e).lower():
+                    self.logger.debug(f"WKST connection failed ({e}), retrying with fallback")
+                    self.wkst_dce = self.get_dce_rpc(MSRPC_UUID_WKST, "wkssvc", use_tcp=False)
+                else:
+                    raise
         return self.wkst_dce
 
     def open_samr_domain(self):
@@ -946,9 +964,13 @@ class rpc(smb):
             shares = resp["InfoStruct"]["ShareInfo"]["Level1"]["Buffer"]
             self.logger.success(f"Found {len(shares)} share(s)")
             
-            smb_conn = self.get_smb_connection()
-            temp_dir = ntpath.normpath("\\" + gen_random_string())
-            temp_file = ntpath.normpath("\\" + gen_random_string() + ".txt")
+            smb_conn = None
+            try:
+                smb_conn = self.get_smb_connection()
+                temp_dir = ntpath.normpath("\\" + gen_random_string())
+                temp_file = ntpath.normpath("\\" + gen_random_string() + ".txt")
+            except Exception as e:
+                self.logger.debug(f"SMB connection for permission testing unavailable: {e}")
             
             self.logger.highlight(f"{'Share':<15} {'Permissions':<15} {'Remark'}")
             self.logger.highlight(f"{'-----':<15} {'-----------':<15} {'------'}")
