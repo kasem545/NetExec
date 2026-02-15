@@ -619,47 +619,48 @@ class rpc(smb):
             self.logger.fail(f"getdompwinfo failed: {e}")
 
     def users(self):
-        """enumdomusers"""
-        self.logger.info("Enumerating users (enumdomusers)")
+        self.logger.info("Enumerating domain users")
         try:
             self.open_samr_domain()
             dce = self.get_samr_dce()
-            users_list = []
-            enum_ctx = 0
-            while True:
-                try:
-                    resp = samr.hSamrEnumerateUsersInDomain(dce, self.domain_handle, samr.USER_NORMAL_ACCOUNT, enumerationContext=enum_ctx)
-                except DCERPCException as e:
-                    if "STATUS_MORE_ENTRIES" in str(e):
-                        resp = e.get_packet()
-                    else:
-                        raise
-                for user in resp["Buffer"]["Buffer"]:
-                    users_list.append((user["RelativeId"], user["Name"]))
-                enum_ctx = resp["EnumerationContext"]
-                if resp["ErrorCode"] != 0x105:
-                    break
-            self.logger.success(f"Found {len(users_list)} user(s)")
-            for rid, name in users_list:
-                self.logger.highlight(f"user:[{name}] rid:[0x{rid:x}]")
-                self.db.add_user(self.domain, name, rid=rid)
-        except Exception as e:
-            self.logger.fail(f"enumdomusers failed: {e}")
-            self.logger.info("Try --rid-brute for anonymous enumeration")
-
-    def querydispinfo(self):
-        """querydispinfo"""
-        self.logger.info("Query display info (querydispinfo)")
-        try:
-            self.open_samr_domain()
-            dce = self.get_samr_dce()
+            
             resp = samr.hSamrQueryDisplayInformation(dce, self.domain_handle, samr.DOMAIN_DISPLAY_INFORMATION.DomainDisplayUser)
             entries = resp["Buffer"]["UserInformation"]["Buffer"]
-            self.logger.success(f"Found {len(entries)} entries")
+            
+            if not entries:
+                self.logger.display("No users found")
+                return
+            
+            self.logger.success(f"Found {len(entries)} user(s)")
+            self.logger.display("")
+            self.logger.display(f"{'RID':<6} {'Username':<30} {'Last PW Set':<20} {'BadPW':<7} {'Description':<50}")
+            self.logger.display("-" * 113)
+            
             for entry in entries:
-                self.logger.highlight(f"index: {entry['Index']} RID: 0x{entry['Rid']:x} acb: 0x{entry['AccountControl']:08x} account: {entry['AccountName']} name: {entry['FullName']} desc: {entry['AdminComment']}")
+                rid = entry["Rid"]
+                username = entry["AccountName"]
+                description = entry["AdminComment"] or ""
+                
+                try:
+                    user_handle = samr.hSamrOpenUser(dce, self.domain_handle, MAXIMUM_ALLOWED, rid)["UserHandle"]
+                    user_info = samr.hSamrQueryInformationUser(dce, user_handle, samr.USER_INFORMATION_CLASS.UserAllInformation)
+                    info = user_info["Buffer"]["All"]
+                    
+                    pw_last_set = self.filetime_to_str(info["PasswordLastSet"]["LowPart"], info["PasswordLastSet"]["HighPart"])
+                    bad_pw_count = info["BadPasswordCount"]
+                    
+                    samr.hSamrCloseHandle(dce, user_handle)
+                except Exception:
+                    pw_last_set = "N/A"
+                    bad_pw_count = 0
+                
+                self.logger.highlight(f"{rid:<6} {username:<30} {pw_last_set:<20} {bad_pw_count:<7} {description:<50}")
+                self.db.add_user(self.domain, username, rid=rid)
+            
+            self.logger.display("")
         except Exception as e:
-            self.logger.fail(f"querydispinfo failed: {e}")
+            self.logger.fail(f"User enumeration failed: {e}")
+            self.logger.info("Try --rid-brute for anonymous enumeration")
 
     def groups(self):
         """enumdomgroups"""

@@ -16,8 +16,7 @@ def proto_args(parser, parents):
     info_group.add_argument("--pass-pol", action="store_true", help="Password policy")
 
     user_group = rpc_parser.add_argument_group("User Enumeration")
-    user_group.add_argument("--users", action="store_true", help="Enumerate users")
-    user_group.add_argument("--querydispinfo", action="store_true", help="Query display info")
+    user_group.add_argument("--users", action="store_true", help="Enumerate users with detailed information (RID, username, password info, description)")
     user_group.add_argument("--rid-brute", nargs="?", type=int, const=4000, metavar="MAX_RID", help="RID cycling enumeration")
     user_group.add_argument("--user", metavar="RID_OR_NAME", type=str, help="Query user by RID or name")
     user_group.add_argument("--user-groups", metavar="RID_OR_NAME", type=str, help="Get groups for user")
