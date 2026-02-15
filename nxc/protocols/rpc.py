@@ -401,9 +401,12 @@ class rpc(smb):
         dce = rpctransport.get_dce_rpc()
         if not is_anonymous:
             if self.doKerberos:
+                auth_type_name = "RPC_C_AUTHN_GSS_NEGOTIATE"
                 dce.set_auth_type(RPC_C_AUTHN_GSS_NEGOTIATE)
             else:
+                auth_type_name = "RPC_C_AUTHN_WINNT"
                 dce.set_auth_type(RPC_C_AUTHN_WINNT)
+            self.logger.debug(f"Setting auth_type={auth_type_name}, auth_level=RPC_C_AUTHN_LEVEL_PKT_PRIVACY for {string_binding}")
             dce.set_auth_level(RPC_C_AUTHN_LEVEL_PKT_PRIVACY)
         
         dce.connect()
@@ -465,13 +468,19 @@ class rpc(smb):
 
     def get_srvs_dce(self):
         if not self.srvs_dce:
+            self.logger.debug("Creating SRVS DCE connection...")
             try:
+                self.logger.debug("Attempting SRVS via TCP (use_tcp=True)")
                 self.srvs_dce = self.get_dce_rpc(MSRPC_UUID_SRVS, "srvsvc", use_tcp=True)
+                self.logger.debug("SRVS TCP connection successful")
             except Exception as e:
+                self.logger.debug(f"SRVS TCP failed with error: {type(e).__name__}: {e}")
                 if "timed out" in str(e).lower() or "connection" in str(e).lower() or "authentication type" in str(e).lower():
-                    self.logger.debug(f"SRVS TCP failed ({e}), trying named pipe")
+                    self.logger.debug("Falling back to SRVS via named pipe (use_tcp=False)")
                     self.srvs_dce = self.get_dce_rpc(MSRPC_UUID_SRVS, "srvsvc", use_tcp=False)
+                    self.logger.debug("SRVS named pipe connection successful")
                 else:
+                    self.logger.debug(f"SRVS connection failed with non-recoverable error, raising exception")
                     raise
         return self.srvs_dce
 
