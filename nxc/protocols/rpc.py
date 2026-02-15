@@ -455,12 +455,22 @@ class rpc(smb):
 
     def get_srvs_dce(self):
         if not self.srvs_dce:
-            self.srvs_dce = self.get_dce_rpc(MSRPC_UUID_SRVS, "srvsvc", use_tcp=False, auth_level=RPC_C_AUTHN_LEVEL_PKT_INTEGRITY)
+            smb_conn = self.get_smb_connection()
+            rpctransport = transport.SMBTransport(self.host, filename=r"\srvsvc", smb_connection=smb_conn)
+            dce = rpctransport.get_dce_rpc()
+            dce.connect()
+            dce.bind(MSRPC_UUID_SRVS)
+            self.srvs_dce = dce
         return self.srvs_dce
 
     def get_wkst_dce(self):
         if not self.wkst_dce:
-            self.wkst_dce = self.get_dce_rpc(MSRPC_UUID_WKST, "wkssvc", use_tcp=False)
+            smb_conn = self.get_smb_connection()
+            rpctransport = transport.SMBTransport(self.host, filename=r"\wkssvc", smb_connection=smb_conn)
+            dce = rpctransport.get_dce_rpc()
+            dce.connect()
+            dce.bind(MSRPC_UUID_WKST)
+            self.wkst_dce = dce
         return self.wkst_dce
 
     def open_samr_domain(self):
