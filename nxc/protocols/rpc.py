@@ -432,14 +432,7 @@ class rpc(smb):
 
     def get_lsa_dce(self):
         if not self.lsa_dce:
-            try:
-                self.lsa_dce = self.get_dce_rpc(MSRPC_UUID_LSAT, "lsarpc")
-            except Exception as e:
-                if "timed out" in str(e).lower():
-                    self.logger.debug(f"LSA connection failed ({e}), retrying with fallback")
-                    self.lsa_dce = self.get_dce_rpc(MSRPC_UUID_LSAT, "lsarpc", use_tcp=False)
-                else:
-                    raise
+            self.lsa_dce = self.get_dce_rpc(MSRPC_UUID_LSAT, "lsarpc", use_tcp=False)
         return self.lsa_dce
 
     def get_smb_connection(self):
@@ -465,26 +458,12 @@ class rpc(smb):
 
     def get_srvs_dce(self):
         if not self.srvs_dce:
-            try:
-                self.srvs_dce = self.get_dce_rpc(MSRPC_UUID_SRVS, "srvsvc")
-            except Exception as e:
-                if "timed out" in str(e).lower():
-                    self.logger.debug(f"SRVS connection failed ({e}), retrying with fallback")
-                    self.srvs_dce = self.get_dce_rpc(MSRPC_UUID_SRVS, "srvsvc", use_tcp=False)
-                else:
-                    raise
+            self.srvs_dce = self.get_dce_rpc(MSRPC_UUID_SRVS, "srvsvc", use_tcp=False)
         return self.srvs_dce
 
     def get_wkst_dce(self):
         if not self.wkst_dce:
-            try:
-                self.wkst_dce = self.get_dce_rpc(MSRPC_UUID_WKST, "wkssvc")
-            except Exception as e:
-                if "timed out" in str(e).lower():
-                    self.logger.debug(f"WKST connection failed ({e}), retrying with fallback")
-                    self.wkst_dce = self.get_dce_rpc(MSRPC_UUID_WKST, "wkssvc", use_tcp=False)
-                else:
-                    raise
+            self.wkst_dce = self.get_dce_rpc(MSRPC_UUID_WKST, "wkssvc", use_tcp=False)
         return self.wkst_dce
 
     def open_samr_domain(self):
