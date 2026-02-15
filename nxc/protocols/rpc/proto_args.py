@@ -20,7 +20,6 @@ def proto_args(parser, parents):
     user_group.add_argument("--rid-brute", nargs="?", type=int, const=4000, metavar="MAX_RID", help="RID cycling enumeration")
     user_group.add_argument("--user", metavar="RID_OR_NAME", type=str, help="Query user by RID or name")
     user_group.add_argument("--user-groups", metavar="RID_OR_NAME", type=str, help="Get groups for user")
-    user_group.add_argument("--user-pass-pol", metavar="RID", type=str, help="User password info")
     user_group.add_argument("--lookup-names", metavar="NAMES", type=str, help="Lookup names")
 
     group_group = rpc_parser.add_argument_group("Group Enumeration")

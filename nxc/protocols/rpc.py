@@ -874,32 +874,6 @@ class rpc(smb):
         except Exception as e:
             self.logger.fail(f"querygroup failed: {e}")
 
-    def user_pass_pol(self):
-        """getusrdompwinfo"""
-        rid_input = self.args.user_pass_pol
-        self.logger.info(f"Getting user password info (getusrdompwinfo {rid_input})")
-        try:
-            self.open_samr_domain()
-            dce = self.get_samr_dce()
-            if rid_input.startswith("0x"):
-                rid = int(rid_input, 16)
-            elif rid_input.isdigit():
-                rid = int(rid_input)
-            else:
-                resp = samr.hSamrLookupNamesInDomain(dce, self.domain_handle, [rid_input])
-                rid = resp["RelativeIds"]["Element"][0]["Data"]
-            resp = samr.hSamrOpenUser(dce, self.domain_handle, MAXIMUM_ALLOWED, rid)
-            user_handle = resp["UserHandle"]
-            resp = samr.hSamrQueryInformationUser(dce, user_handle, samr.USER_INFORMATION_CLASS.UserAllInformation)
-            info = resp["Buffer"]["All"]
-            self.logger.highlight(f"Password last set: {info['PasswordLastSet']['LowPart']}")
-            self.logger.highlight(f"Password can change: {info['PasswordCanChange']['LowPart']}")
-            self.logger.highlight(f"Password must change: {info['PasswordMustChange']['LowPart']}")
-            self.logger.highlight(f"Bad password count: {info['BadPasswordCount']}")
-            samr.hSamrCloseHandle(dce, user_handle)
-        except Exception as e:
-            self.logger.fail(f"getusrdompwinfo failed: {e}")
-
     def rid_brute(self):
         max_rid = self.args.rid_brute
         self.logger.info(f"RID cycling from 500 to {max_rid}")
