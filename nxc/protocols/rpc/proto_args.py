@@ -30,6 +30,7 @@ def proto_args(parser, parents):
 
     share_group = rpc_parser.add_argument_group("Share Enumeration")
     share_group.add_argument("--shares", action="store_true", help="Enumerate shares")
+    share_group.add_argument("--share", metavar="SHARE", type=str, help="Share info")
     share_group.add_argument("--sessions", action="store_true", help="Enumerate sessions")
     share_group.add_argument("--connections", action="store_true", help="Enumerate connections")
 
