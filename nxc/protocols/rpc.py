@@ -878,8 +878,20 @@ class rpc(smb):
             resp = samr.hSamrGetMembersInGroup(dce, group_handle)
             members = resp["Members"]["Members"]
             if members:
-                rids = [str(m["Data"]) for m in members]
-                self.logger.highlight(f"Member RIDs: {', '.join(rids)}")
+                member_rids = [m["Data"] for m in members]
+                try:
+                    resp_lookup = samr.hSamrLookupIdsInDomain(dce, self.domain_handle, member_rids)
+                    names = resp_lookup["Names"]["Element"]
+                    member_info = []
+                    for i, rid in enumerate(member_rids):
+                        if i < len(names) and names[i]["Data"]:
+                            member_info.append(f"{names[i]['Data']} (RID: {rid})")
+                        else:
+                            member_info.append(f"RID: {rid}")
+                    self.logger.highlight(f"Members: {', '.join(member_info)}")
+                except Exception:
+                    rids = [str(m) for m in member_rids]
+                    self.logger.highlight(f"Member RIDs: {', '.join(rids)}")
             samr.hSamrCloseHandle(dce, group_handle)
         except Exception as e:
             self.logger.fail(f"querygroup failed: {e}")
