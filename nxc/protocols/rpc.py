@@ -376,7 +376,7 @@ class rpc(smb):
             self.logger.fail(f"{domain}\\{username}:{process_secret(self.nthash)} {last_error or 'Access denied'}")
         return False
 
-    def get_dce_rpc(self, interface_uuid, named_pipe=None, use_tcp=False):
+    def get_dce_rpc(self, interface_uuid, named_pipe=None, use_tcp=False, auth_level=None):
         is_anonymous = not self.username and not self.password and not self.nthash
         
         if named_pipe and (is_anonymous or not use_tcp):
@@ -401,10 +401,10 @@ class rpc(smb):
         dce = rpctransport.get_dce_rpc()
         if self.doKerberos:
             dce.set_auth_type(RPC_C_AUTHN_GSS_NEGOTIATE)
-            dce.set_auth_level(RPC_C_AUTHN_LEVEL_PKT_PRIVACY)
+            dce.set_auth_level(auth_level if auth_level else RPC_C_AUTHN_LEVEL_PKT_PRIVACY)
         elif not is_anonymous:
             dce.set_auth_type(RPC_C_AUTHN_WINNT)
-            dce.set_auth_level(RPC_C_AUTHN_LEVEL_PKT_PRIVACY)
+            dce.set_auth_level(auth_level if auth_level else RPC_C_AUTHN_LEVEL_PKT_PRIVACY)
         
         dce.connect()
         dce.bind(interface_uuid)
@@ -458,7 +458,7 @@ class rpc(smb):
 
     def get_srvs_dce(self):
         if not self.srvs_dce:
-            self.srvs_dce = self.get_dce_rpc(MSRPC_UUID_SRVS, "srvsvc", use_tcp=False)
+            self.srvs_dce = self.get_dce_rpc(MSRPC_UUID_SRVS, "srvsvc", use_tcp=False, auth_level=RPC_C_AUTHN_LEVEL_PKT_INTEGRITY)
         return self.srvs_dce
 
     def get_wkst_dce(self):
