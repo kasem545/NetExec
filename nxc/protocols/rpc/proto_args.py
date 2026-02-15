@@ -10,7 +10,7 @@ def proto_args(parser, parents):
 
     info_group = rpc_parser.add_argument_group("Server/Domain Information")
     info_group.add_argument("--server-info", action="store_true", help="Server info")
-    info_group.add_argument("--enum-domains", action="store_true", help="Enumerate domains")
+    info_group.add_argument("--enum-domains", action="store_true", help="Enumerate domains with SIDs")
     info_group.add_argument("--enum-trusts", action="store_true", help="Enumerate trusted domains")
     info_group.add_argument("--domain-info", action="store_true", help="Domain info")
     info_group.add_argument("--pass-pol", action="store_true", help="Password policy")
@@ -34,10 +34,7 @@ def proto_args(parser, parents):
     share_group.add_argument("--connections", action="store_true", help="Enumerate connections")
 
     lsa_group = rpc_parser.add_argument_group("LSA Operations")
-    lsa_group.add_argument("--lsa-query", action="store_true", help="LSA query")
-    lsa_group.add_argument("--lsa-lookup-sids", metavar="SIDS", type=str, help="Lookup SIDs")
-    lsa_group.add_argument("--lsa-lookup-names", metavar="NAMES", type=str, help="Lookup names via LSA")
-    lsa_group.add_argument("--lsa-enum-accounts", action="store_true", help="Enumerate SIDs")
+    lsa_group.add_argument("--lookup-name", metavar="NAME", type=str, help="Lookup name to SID")
     lsa_group.add_argument("--lsa-enum-privileges", action="store_true", help="Enumerate privileges")
     lsa_group.add_argument("--lsa-enum-account-rights", metavar="SID", type=str, help="Account rights")
     lsa_group.add_argument("--lsa-create-account", metavar="SID", type=str, help="Create LSA account")
@@ -46,7 +43,6 @@ def proto_args(parser, parents):
     sid_group = rpc_parser.add_argument_group("SID/SAM Operations")
     sid_group.add_argument("--sid-lookup", metavar="SID", type=str, help="Lookup SID to name")
     sid_group.add_argument("--sam-lookup", nargs=2, metavar=("domain|builtin", "NAMES"), help="SAM lookup names")
-    sid_group.add_argument("--lookup-domain", metavar="DOMAIN", type=str, help="Domain lookup")
 
     mgmt_group = rpc_parser.add_argument_group("User/Group Management")
     mgmt_group.add_argument("--create-user", metavar="USER:PASS", type=str, help="Create user")

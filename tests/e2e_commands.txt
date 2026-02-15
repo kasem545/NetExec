@@ -350,8 +350,6 @@ netexec rpc TARGET_HOST -u LOGIN_USERNAME -p LOGIN_PASSWORD --share C$
 netexec rpc TARGET_HOST -u LOGIN_USERNAME -p LOGIN_PASSWORD --sessions
 netexec rpc TARGET_HOST -u LOGIN_USERNAME -p LOGIN_PASSWORD --connections
 ##### RPC LSA Operations
-netexec rpc TARGET_HOST -u LOGIN_USERNAME -p LOGIN_PASSWORD --lsa-query
-netexec rpc TARGET_HOST -u LOGIN_USERNAME -p LOGIN_PASSWORD --lsa-enum-accounts
 netexec rpc TARGET_HOST -u LOGIN_USERNAME -p LOGIN_PASSWORD --lsa-enum-privileges
 netexec rpc TARGET_HOST -u LOGIN_USERNAME -p LOGIN_PASSWORD --lsa-query-security
 ##### RPC SID/SAM Operations

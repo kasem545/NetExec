@@ -542,8 +542,15 @@ class rpc(smb):
             resp = samr.hSamrEnumerateDomainsInSamServer(dce, server_handle)
             domains = resp["Buffer"]["Buffer"]
             self.logger.success(f"Found {len(domains)} domain(s)")
+            self.logger.highlight(f"{'-Domain Name-':<30} {'-SID-':<60}")
             for d in domains:
-                self.logger.highlight(f"  {d['Name']}")
+                domain_name = d["Name"]
+                try:
+                    resp_sid = samr.hSamrLookupDomainInSamServer(dce, server_handle, domain_name)
+                    sid = resp_sid["DomainId"].formatCanonical()
+                except Exception:
+                    sid = "N/A"
+                self.logger.highlight(f"{domain_name:<30} {sid:<60}")
         except Exception as e:
             self.logger.fail(f"enumdomains failed: {e}")
 
@@ -688,12 +695,11 @@ class rpc(smb):
             resp = samr.hSamrEnumerateGroupsInDomain(dce, self.domain_handle)
             groups = resp["Buffer"]["Buffer"]
             self.logger.success(f"Found {len(groups)} group(s)")
-            self.logger.highlight(f"{'-Group-':<50} {'-SID-':<60}")
+            self.logger.highlight(f"{'-Group-':<50} {'-RID-':<10}")
             for g in groups:
                 group_name = g["Name"]
                 rid = g["RelativeId"]
-                sid = f"{self.domain_sid.formatCanonical()}-{rid}" if self.domain_sid else f"RID-{rid}"
-                self.logger.highlight(f"{group_name:<50} {sid:<60}")
+                self.logger.highlight(f"{group_name:<50} {rid:<10}")
                 self.db.add_group(self.domain, group_name, rid=rid)
         except Exception as e:
             self.logger.fail(f"enumdomgroups failed: {e}")
@@ -707,12 +713,11 @@ class rpc(smb):
             resp = samr.hSamrEnumerateAliasesInDomain(dce, self.builtin_handle)
             aliases = resp["Buffer"]["Buffer"]
             self.logger.success(f"Found {len(aliases)} alias(es)")
-            self.logger.highlight(f"{'-Group-':<50} {'-SID-':<60}")
+            self.logger.highlight(f"{'-Group-':<50} {'-RID-':<10}")
             for a in aliases:
                 group_name = a["Name"]
                 rid = a["RelativeId"]
-                sid = f"S-1-5-32-{rid}"
-                self.logger.highlight(f"{group_name:<50} {sid:<60}")
+                self.logger.highlight(f"{group_name:<50} {rid:<10}")
         except Exception as e:
             self.logger.fail(f"enumalsgroups failed: {e}")
 
@@ -1055,36 +1060,6 @@ class rpc(smb):
         except Exception as e:
             self.logger.fail(f"netconnenum failed: {e}")
 
-    def lsa_query(self):
-        """lsaquery"""
-        self.logger.info("LSA query (lsaquery)")
-        try:
-            dce = self.get_lsa_dce()
-            resp = lsad.hLsarOpenPolicy(dce, lsad.POLICY_VIEW_LOCAL_INFORMATION)
-            policy_handle = resp["PolicyHandle"]
-            resp = lsad.hLsarQueryInformationPolicy(dce, policy_handle, lsad.POLICY_INFORMATION_CLASS.PolicyPrimaryDomainInformation)
-            info = resp["PolicyInformation"]["PolicyPrimaryDomainInfo"]
-            self.logger.highlight(f"Domain Name: {info['Name']}")
-            if info["Sid"]:
-                self.logger.highlight(f"Domain SID: {info['Sid'].formatCanonical()}")
-        except Exception as e:
-            self.logger.fail(f"lsaquery failed: {e}")
-
-    def lsa_enum_accounts(self):
-        """lsaenumsid"""
-        self.logger.info("Enumerating SIDs (lsaenumsid)")
-        try:
-            dce = self.get_lsa_dce()
-            resp = lsad.hLsarOpenPolicy(dce, lsad.POLICY_VIEW_LOCAL_INFORMATION)
-            policy_handle = resp["PolicyHandle"]
-            resp = lsad.hLsarEnumerateAccounts(dce, policy_handle)
-            sids = resp["EnumerationBuffer"]["Information"]
-            self.logger.success(f"Found {len(sids)} SID(s)")
-            for sid_info in sids:
-                self.logger.highlight(f"  {sid_info['Sid'].formatCanonical()}")
-        except Exception as e:
-            self.logger.fail(f"lsaenumsid failed: {e}")
-
     def lsa_enum_privileges(self):
         """enumprivs"""
         self.logger.info("Enumerating privileges (enumprivs)")
@@ -1129,33 +1104,10 @@ class rpc(smb):
         except Exception as e:
             self.logger.fail(f"lsacreateaccount failed: {e}")
 
-    def lsa_lookup_sids(self):
-        """lookupsids"""
-        sids_str = self.args.lsa_lookup_sids
-        sids = [s.strip() for s in sids_str.split(",")]
-        self.logger.info("Looking up SIDs (lookupsids)")
-        try:
-            dce = self.get_lsa_dce()
-            resp = lsad.hLsarOpenPolicy(dce, lsat.POLICY_LOOKUP_NAMES)
-            policy_handle = resp["PolicyHandle"]
-            for sid in sids:
-                try:
-                    resp = lsat.hLsarLookupSids(dce, policy_handle, [sid])
-                    names = resp["TranslatedNames"]["Names"]
-                    domains = resp["ReferencedDomains"]["Domains"]
-                    for n in names:
-                        dom_idx = n["DomainIndex"]
-                        dom = domains[dom_idx]["Name"] if dom_idx >= 0 else ""
-                        self.logger.highlight(f"  {sid} -> {dom}\\{n['Name']} (type {n['Use']})")
-                except Exception as e:
-                    self.logger.fail(f"  {sid} -> lookup failed: {e}")
-        except Exception as e:
-            self.logger.fail(f"lookupsids failed: {e}")
-
-    def lsa_lookup_names(self):
-        """lookupnames via LSA"""
-        names_str = self.args.lsa_lookup_names
-        names = [n.strip() for n in names_str.split(",")]
+    def lookup_name(self):
+        """lookupname via LSA"""
+        name = self.args.lookup_name
+        names = [name.strip()]
         self.logger.info("Looking up names via LSA")
         try:
             dce = self.get_lsa_dce()
@@ -1332,20 +1284,6 @@ class rpc(smb):
                     self.logger.highlight(f"{name} {domain_sid}-{rid} ({type_name}: {use})")
         except Exception as e:
             self.logger.fail(f"samlookupnames failed: {e}")
-
-    def lookup_domain(self):
-        """lookupdomain"""
-        domain_name = self.args.lookup_domain
-        self.logger.info(f"Looking up domain (lookupdomain {domain_name})")
-        try:
-            dce = self.get_samr_dce()
-            resp = samr.hSamrConnect(dce)
-            server_handle = resp["ServerHandle"]
-            resp = samr.hSamrLookupDomainInSamServer(dce, server_handle, domain_name)
-            sid = resp["DomainId"].formatCanonical()
-            self.logger.highlight(f"Domain {domain_name} -> SID {sid}")
-        except Exception as e:
-            self.logger.fail(f"lookupdomain failed: {e}")
 
     def create_user(self):
         user_pass = self.args.create_user
