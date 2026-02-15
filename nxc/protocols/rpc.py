@@ -874,7 +874,6 @@ class rpc(smb):
             self.logger.highlight(f"Group Name: {info['Name']}")
             self.logger.highlight(f"Description: {info['AdminComment']}")
             self.logger.highlight(f"Group Attribute: {info['Attributes']}")
-            self.logger.highlight(f"Num Members: {info['MemberCount']}")
             resp = samr.hSamrGetMembersInGroup(dce, group_handle)
             members = resp["Members"]["Members"]
             if members:
