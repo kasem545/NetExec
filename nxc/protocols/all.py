@@ -289,7 +289,8 @@ class all(connection):
         pass
 
     def print_host_info(self):
-        pass
+        protocols_to_run = self._get_protocols_to_run()
+        self.logger.display(f"Running authentication across {len(protocols_to_run)} protocol(s): {', '.join(protocols_to_run).upper()}")
 
     def proto_flow(self):
         self.proto_logger()
