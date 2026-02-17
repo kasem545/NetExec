@@ -1,5 +1,7 @@
 import contextlib
 import copy
+import socket
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from os.path import join as path_join
 
@@ -336,10 +338,33 @@ class all(connection):
             nxc_logger.debug(f"Could not load {protocol_name} database: {e}")
             return None
 
+    def _port_open(self, port, timeout=3):
+        port_int = int(port[0]) if isinstance(port, list) else int(port)
+        try:
+            with socket.create_connection((self.host, port_int), timeout=timeout):
+                return True, port_int
+        except Exception:
+            return False, port_int
+
     def _run_protocol(self, protocol_name):
         if protocol_name not in self.available_protocols:
             nxc_logger.debug(f"Protocol {protocol_name} not available, skipping")
             return
+
+        port = PROTOCOL_PORTS.get(protocol_name)
+        if port is not None:
+            open_, port_int = self._port_open(port)
+            if not open_:
+                NXCAdapter(
+                    extra={
+                        "protocol": protocol_name.upper(),
+                        "host": self.host,
+                        "port": port_int,
+                        "hostname": self.hostname,
+                    }
+                ).fail("Connection failed")
+                return
+
         try:
             sub_db = self._load_sub_db(protocol_name)
             if sub_db is None:
@@ -357,12 +382,20 @@ class all(connection):
         targets = self._get_protocols_to_run()
         timeout = getattr(self.args, "timeout", None) or 60
         executor = ThreadPoolExecutor(max_workers=len(targets))
-        futures = {executor.submit(self._run_protocol, proto): proto for proto in targets}
+        ordered_futures = [(proto, executor.submit(self._run_protocol, proto)) for proto in targets]
         try:
-            for future in as_completed(futures, timeout=timeout):
-                with contextlib.suppress(Exception):
-                    future.result()
-        except TimeoutError:
-            nxc_logger.debug(f"Timed out waiting for protocols after {timeout}s")
+            remaining = timeout
+            for proto, future in ordered_futures:
+                start = time.monotonic()
+                try:
+                    future.result(timeout=max(remaining, 1))
+                except TimeoutError:
+                    nxc_logger.debug(f"Timed out waiting for {proto}")
+                except Exception as e:
+                    nxc_logger.debug(f"Protocol {proto} raised: {e}")
+                remaining -= time.monotonic() - start
+                if remaining <= 0:
+                    nxc_logger.debug("Overall timeout reached, cancelling remaining protocols")
+                    break
         finally:
             executor.shutdown(wait=False, cancel_futures=True)
