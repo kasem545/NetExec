@@ -7,7 +7,7 @@ from nxc.connection import connection
 from nxc.database import create_db_engine
 from nxc.logger import nxc_logger, NXCAdapter
 from nxc.loaders.protocolloader import ProtocolLoader
-from nxc.config import nxc_workspace
+from nxc.config import nxc_workspace, nxc_config
 from nxc.paths import WORKSPACE_DIR
 
 ALL_PROTOCOLS = ["ftp", "ssh", "wmi", "smb", "mssql", "rpc", "rdp", "vnc", "ldap", "winrm", "nfs"]
@@ -289,8 +289,7 @@ class all(connection):
         pass
 
     def print_host_info(self):
-        protocols_to_run = self._get_protocols_to_run()
-        self.logger.display(f"Running authentication across {len(protocols_to_run)} protocol(s): {', '.join(protocols_to_run).upper()}")
+        pass
 
     def proto_flow(self):
         self.proto_logger()
@@ -348,6 +347,8 @@ class all(connection):
             sub_args = self._build_sub_args(protocol_name)
             proto_info = self.available_protocols[protocol_name]
             proto_cls = getattr(self.p_loader.load_protocol(proto_info["path"]), protocol_name)
+            proto_cls.config = nxc_config
+            proto_cls.print_host_info = lambda self: None
             proto_cls(sub_args, sub_db, self.hostname)
         except Exception as e:
             nxc_logger.debug(f"Error running {protocol_name} against {self.hostname}: {e}")
