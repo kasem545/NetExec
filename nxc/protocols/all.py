@@ -373,7 +373,19 @@ class all(connection):
             proto_info = self.available_protocols[protocol_name]
             proto_cls = getattr(self.p_loader.load_protocol(proto_info["path"]), protocol_name)
             proto_cls.config = nxc_config
-            proto_cls(sub_args, sub_db, self.hostname)
+            pinned_name = protocol_name.upper()
+
+            class _Pinned(proto_cls):
+                def proto_logger(self_inner):
+                    super().proto_logger()
+                    self_inner.logger.extra["protocol"] = pinned_name
+
+                def print_host_info(self_inner):
+                    super().print_host_info()
+                    self_inner.logger.extra["protocol"] = pinned_name
+
+            _Pinned.config = nxc_config
+            _Pinned(sub_args, sub_db, self.hostname)
         except Exception as e:
             nxc_logger.debug(f"Error running {protocol_name} against {self.hostname}: {e}")
 
