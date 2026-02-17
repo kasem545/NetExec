@@ -1,8 +1,7 @@
 import contextlib
 import copy
 import socket
-import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor
 from os.path import join as path_join
 
 from nxc.connection import connection
@@ -380,22 +379,9 @@ class all(connection):
 
     def _run_all_protocols(self):
         targets = self._get_protocols_to_run()
-        timeout = getattr(self.args, "timeout", None) or 60
-        executor = ThreadPoolExecutor(max_workers=len(targets))
-        ordered_futures = [(proto, executor.submit(self._run_protocol, proto)) for proto in targets]
-        try:
-            remaining = timeout
-            for proto, future in ordered_futures:
-                start = time.monotonic()
-                try:
-                    future.result(timeout=max(remaining, 1))
-                except TimeoutError:
-                    nxc_logger.debug(f"Timed out waiting for {proto}")
-                except Exception as e:
-                    nxc_logger.debug(f"Protocol {proto} raised: {e}")
-                remaining -= time.monotonic() - start
-                if remaining <= 0:
-                    nxc_logger.debug("Overall timeout reached, cancelling remaining protocols")
-                    break
-        finally:
-            executor.shutdown(wait=False, cancel_futures=True)
+        per_proto_timeout = getattr(self.args, "timeout", None) or 15
+        for proto in targets:
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(self._run_protocol, proto)
+                with contextlib.suppress(Exception):
+                    future.result(timeout=per_proto_timeout)
