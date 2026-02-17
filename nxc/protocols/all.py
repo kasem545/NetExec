@@ -349,15 +349,20 @@ class all(connection):
             proto_info = self.available_protocols[protocol_name]
             proto_cls = getattr(self.p_loader.load_protocol(proto_info["path"]), protocol_name)
             proto_cls.config = nxc_config
-            proto_cls.print_host_info = lambda self: None
             proto_cls(sub_args, sub_db, self.hostname)
         except Exception as e:
             nxc_logger.debug(f"Error running {protocol_name} against {self.hostname}: {e}")
 
     def _run_all_protocols(self):
         targets = self._get_protocols_to_run()
-        with ThreadPoolExecutor(max_workers=len(targets)) as executor:
-            futures = {executor.submit(self._run_protocol, proto): proto for proto in targets}
-            for future in as_completed(futures):
+        timeout = getattr(self.args, "timeout", None) or 60
+        executor = ThreadPoolExecutor(max_workers=len(targets))
+        futures = {executor.submit(self._run_protocol, proto): proto for proto in targets}
+        try:
+            for future in as_completed(futures, timeout=timeout):
                 with contextlib.suppress(Exception):
                     future.result()
+        except TimeoutError:
+            nxc_logger.debug(f"Timed out waiting for protocols after {timeout}s")
+        finally:
+            executor.shutdown(wait=False, cancel_futures=True)
